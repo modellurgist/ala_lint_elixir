@@ -2,7 +2,7 @@ defmodule AlaLint.MixProject do
   use Mix.Project
 
   @version "0.1.0"
-  @source_url "https://github.com/modellurgist/ala_lint"
+  @source_url "https://github.com/modellurgist/ala_lint_elixir"
 
   def project do
     [
@@ -35,9 +35,10 @@ defmodule AlaLint.MixProject do
 
   defp package do
     [
+      name: "ala_lint",
       licenses: ["MIT"],
       links: %{"GitHub" => @source_url},
-      files: ~w(lib mix.exs README.md .formatter.exs)
+      files: ~w(lib mix.exs README.md LICENSE .formatter.exs)
     ]
   end
 end
