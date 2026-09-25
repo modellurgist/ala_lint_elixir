@@ -15,16 +15,16 @@ defmodule AlaLint.MixProject do
       package: package(),
       name: "AlaLint",
       source_url: @source_url,
-      docs: [main: "readme", extras: ["README.md"]]
+      docs: [main: "readme", extras: ["README.md", "LICENSE"]]
     ]
   end
 
   def application, do: [extra_applications: [:logger]]
 
   defp deps do
-    # No runtime deps — pure stdlib static analysis. (Add {:ex_doc, …} locally
-    # when generating HTML docs for a Hex release.)
-    []
+    # No runtime deps — pure stdlib static analysis. ex_doc is dev-only; Hex
+    # builds the HTML docs with it at publish time.
+    [{:ex_doc, ">= 0.0.0", only: :dev, runtime: false}]
   end
 
   defp description do
