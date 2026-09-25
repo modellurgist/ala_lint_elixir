@@ -11,7 +11,24 @@ defmodule AlaLint.Rules do
 
   alias AlaLint.Finding
 
-  @weights %{r1: 3, r1_ref: 3, r2: 3, r5: 3, r10: 3, r10_aggregate: 3, r4: 2, r3: 1, r6: 1, r7: 1, r11: 1, module_size: 1, height: 1, passthrough: 1, public_surface: 1, layer: 3}
+  @weights %{
+    r1: 3,
+    r1_ref: 3,
+    r2: 3,
+    r5: 3,
+    r10: 3,
+    r10_aggregate: 3,
+    r4: 2,
+    r3: 1,
+    r6: 1,
+    r7: 1,
+    r11: 1,
+    module_size: 1,
+    height: 1,
+    passthrough: 1,
+    public_surface: 1,
+    layer: 3
+  }
   def weights, do: @weights
 
   # Advisory rules that a strict mode promotes to scored. `--strict` promotes the
@@ -26,17 +43,50 @@ defmodule AlaLint.Rules do
   # its own sake, so "unearned/single-use" is a prompt to a human, not a fail.
   # `:height` (abstraction depth) is likewise a design smell to notice, not a
   # gate.
-  @severity %{r7: :warn, height: :warn, passthrough: :warn, r1_ref: :warn, r11: :warn, module_size: :warn, public_surface: :warn, r10_aggregate: :warn}
+  @severity %{
+    r7: :warn,
+    height: :warn,
+    passthrough: :warn,
+    r1_ref: :warn,
+    r11: :warn,
+    module_size: :warn,
+    public_surface: :warn,
+    r10_aggregate: :warn
+  }
   def default_severity(rule), do: Map.get(@severity, rule, :error)
 
   # Control-flow / composition forms whose presence means a body is more than a
   # single bare call (used by both the pass-through and the R7-triviality checks).
-  @nontrivial_forms [:__block__, :|>, :case, :cond, :if, :unless, :with, :for, :fn, :try, :receive, :quote]
+  @nontrivial_forms [
+    :__block__,
+    :|>,
+    :case,
+    :cond,
+    :if,
+    :unless,
+    :with,
+    :for,
+    :fn,
+    :try,
+    :receive,
+    :quote
+  ]
 
   @doc "Run every rule; returns a flat list of findings."
   def run(model) do
-    r1(model) ++ r1_reference(model) ++ r2(model) ++ r3(model) ++ r4(model) ++ r5(model) ++ r6(model) ++ r7(model) ++
-      r10(model) ++ r10_aggregate(model) ++ r11(model) ++ module_size(model) ++ height(model) ++ passthrough(model) ++ public_surface(model) ++ layer_validity(model)
+    r1(model) ++
+      r1_reference(model) ++
+      r2(model) ++
+      r3(model) ++
+      r4(model) ++
+      r5(model) ++
+      r6(model) ++
+      r7(model) ++
+      r10(model) ++
+      r10_aggregate(model) ++
+      r11(model) ++
+      module_size(model) ++
+      height(model) ++ passthrough(model) ++ public_surface(model) ++ layer_validity(model)
   end
 
   # ── R10: no shared entity. A domain struct that carries an app-identity's
@@ -56,8 +106,15 @@ defmodule AlaLint.Rules do
         units_sharing = entity_sharers(m, model, idx, peer_ok, units),
         MapSet.size(units_sharing) >= 2 do
       who = units_sharing |> Enum.map(&short/1) |> Enum.sort() |> Enum.join(", ")
-      f(:r10, m.name, model, m, m.line,
-        "entity #{short(m.name)} is read by #{MapSet.size(units_sharing)} peer features (#{who}) — share an identity key and keep data private (R10)")
+
+      f(
+        :r10,
+        m.name,
+        model,
+        m,
+        m.line,
+        "entity #{short(m.name)} is read by #{MapSet.size(units_sharing)} peer features (#{who}) — share an identity key and keep data private (R10)"
+      )
     end
   end
 
@@ -69,7 +126,9 @@ defmodule AlaLint.Rules do
   # (peer_ok) layer that ≥2 features read: a legitimate domain abstraction, or
   # Clean's shared-Entity coupling? A human decides. Advisory; super-strict
   # scores it (via the enforce list). ───────────────────────────────────────
-  def r10_aggregate(%{check_aggregates: true, layers: %{index: idx, peer_ok: peer_ok, units: units}} = model) do
+  def r10_aggregate(
+        %{check_aggregates: true, layers: %{index: idx, peer_ok: peer_ok, units: units}} = model
+      ) do
     for m <- model.modules,
         m.defines_struct,
         si = idx[m.name],
@@ -78,8 +137,15 @@ defmodule AlaLint.Rules do
         units_sharing = entity_sharers(m, model, idx, peer_ok, units),
         MapSet.size(units_sharing) >= 2 do
       who = units_sharing |> Enum.map(&short/1) |> Enum.sort() |> Enum.join(", ")
-      f(:r10_aggregate, m.name, model, m, m.line,
-        "domain aggregate #{short(m.name)} is read by #{MapSet.size(units_sharing)} features (#{who}) — a shared aggregate couples them; consider per-feature private data + an identity key (R10, strict)")
+
+      f(
+        :r10_aggregate,
+        m.name,
+        model,
+        m,
+        m.line,
+        "domain aggregate #{short(m.name)} is read by #{MapSet.size(units_sharing)} features (#{who}) — a shared aggregate couples them; consider per-feature private data + an identity key (R10, strict)"
+      )
     end
   end
 
@@ -110,7 +176,14 @@ defmodule AlaLint.Rules do
 
     size =
       if share > max_share do
-        [f(:r11, "(project)", model, "the application layer is #{round(share * 100)}% of functions (> #{round(max_share * 100)}%) — the top layer should be mostly wiring + config, not logic (R11)")]
+        [
+          f(
+            :r11,
+            "(project)",
+            model,
+            "the application layer is #{round(share * 100)}% of functions (> #{round(max_share * 100)}%) — the top layer should be mostly wiring + config, not logic (R11)"
+          )
+        ]
       else
         []
       end
@@ -127,8 +200,14 @@ defmodule AlaLint.Rules do
           MapSet.member?(app_id_set, {m.name, name, arity}),
           branchy = Enum.find(clauses, &branchy?(&1.body)),
           branchy != nil do
-        f(:r11, m.name, model, m, branchy.line,
-          "#{short(m.name)}.#{name}/#{arity} branches in the application layer — the top layer should read as wiring + config; move logic below it (R11)")
+        f(
+          :r11,
+          m.name,
+          model,
+          m,
+          branchy.line,
+          "#{short(m.name)}.#{name}/#{arity} branches in the application layer — the top layer should read as wiring + config; move logic below it (R11)"
+        )
       end
 
     size ++ branches
@@ -155,8 +234,14 @@ defmodule AlaLint.Rules do
     max = Map.get(model, :max_module_loc, 500)
 
     for m <- model.modules, m.loc > max do
-      f(:module_size, m.name, model, m, m.line,
-        "module #{short(m.name)} is #{m.loc} lines (> #{max}) — an abstraction should be readable in isolation; check it is really one concept (R7-adjacent)")
+      f(
+        :module_size,
+        m.name,
+        model,
+        m,
+        m.line,
+        "module #{short(m.name)} is #{m.loc} lines (> #{max}) — an abstraction should be readable in isolation; check it is really one concept (R7-adjacent)"
+      )
     end
   end
 
@@ -172,8 +257,14 @@ defmodule AlaLint.Rules do
     for m <- model.modules,
         publics = Enum.count(m.functions, &(not &1.private)),
         publics > max do
-      f(:public_surface, m.name, model, m, m.line,
-        "module #{short(m.name)} exposes #{publics} public functions (> #{max}) — a wide public surface leaks internals; keep the mess private behind a small boundary, and confirm this is one concept (R6/R7-adjacent)")
+      f(
+        :public_surface,
+        m.name,
+        model,
+        m,
+        m.line,
+        "module #{short(m.name)} exposes #{publics} public functions (> #{max}) — a wide public surface leaks internals; keep the mess private behind a small boundary, and confirm this is one concept (R6/R7-adjacent)"
+      )
     end
   end
 
@@ -187,14 +278,24 @@ defmodule AlaLint.Rules do
   # coupling — but in LiveView it usually is a template call.
   def r1_reference(%{layers: %{index: idx, peer_ok: peer_ok, units: units}} = model) do
     call_pairs =
-      for {{cm, _, _}, callees} <- model.call_graph, {tm, _, _} <- callees, into: MapSet.new(), do: {cm, tm}
+      for {{cm, _, _}, callees} <- model.call_graph,
+          {tm, _, _} <- callees,
+          into: MapSet.new(),
+          do: {cm, tm}
 
-    for {a, deps} <- model.dep_graph, b <- deps,
+    for {a, deps} <- model.dep_graph,
+        b <- deps,
         not MapSet.member?(call_pairs, {a, b}),
-        ia = idx[a], ib = idx[b], ia != nil and ib != nil,
+        ia = idx[a],
+        ib = idx[b],
+        ia != nil and ib != nil,
         violation = altitude_violation(a, b, ia, ib, peer_ok, units) do
-      f(:r1_ref, a, model,
-        "#{short(a)} → #{short(b)}: #{violation} — reference-level only (alias/type/template use, no direct call in the AST; in LiveView this is usually a cross-feature call inside a ~H template) — verify")
+      f(
+        :r1_ref,
+        a,
+        model,
+        "#{short(a)} → #{short(b)}: #{violation} — reference-level only (alias/type/template use, no direct call in the AST; in LiveView this is usually a cross-feature call inside a ~H template) — verify"
+      )
     end
   end
 
@@ -208,8 +309,15 @@ defmodule AlaLint.Rules do
 
     for {{mod, name, arity} = id, tag} <- unknown do
       {m, fun} = Map.get(by_id, id, {nil, nil})
-      f(:layer, mod, model, m, fun && fun.line,
-        "#{short(mod)}.#{name}/#{arity} is tagged @ala_layer #{inspect(tag)}, which is not a declared layer — fix the tag or declare the layer")
+
+      f(
+        :layer,
+        mod,
+        model,
+        m,
+        fun && fun.line,
+        "#{short(mod)}.#{name}/#{arity} is tagged @ala_layer #{inspect(tag)}, which is not a declared layer — fix the tag or declare the layer"
+      )
     end
   end
 
@@ -253,7 +361,14 @@ defmodule AlaLint.Rules do
     max = Map.get(model, :max_height, 5)
 
     if depth > max do
-      [f(:height, "(project)", model, "abstraction height is #{depth} levels deep (> #{max}) — counting hops *between* abstractions (calls inside one module are internal decomposition and do not add altitude); deep chains can hide helper proliferation (R7-adjacent)")]
+      [
+        f(
+          :height,
+          "(project)",
+          model,
+          "abstraction height is #{depth} levels deep (> #{max}) — counting hops *between* abstractions (calls inside one module are internal decomposition and do not add altitude); deep chains can hide helper proliferation (R7-adjacent)"
+        )
+      ]
     else
       []
     end
@@ -273,8 +388,14 @@ defmodule AlaLint.Rules do
     by_id = fun_lookup(model)
 
     for {id, {cmod, cname, carity}} <- passthrough_ids(model), {m, fun} = Map.get(by_id, id) do
-      f(:passthrough, m.name, model, m, fun.line,
-        "#{short(m.name)}.#{fun.name}/#{fun.arity} is a pass-through (1 caller, 1 callee → #{short(cmod)}.#{cname}/#{carity}); it renames a call without hiding a decision — consider inlining (R7-adjacent)")
+      f(
+        :passthrough,
+        m.name,
+        model,
+        m,
+        fun.line,
+        "#{short(m.name)}.#{fun.name}/#{fun.arity} is a pass-through (1 caller, 1 callee → #{short(cmod)}.#{cname}/#{carity}); it renames a call without hiding a decision — consider inlining (R7-adjacent)"
+      )
     end
   end
 
@@ -318,8 +439,10 @@ defmodule AlaLint.Rules do
   # transform, not a rename (`subtotal_cents(x) |> Money.new()`,
   # `%Foo{...} |> recompute()`), so it is not a pass-through.
   defp single_call_body?({:|>, _, [left, {{:., _, _}, _, _}]}), do: bare_operand?(left)
+
   defp single_call_body?({:|>, _, [left, {name, _, args}]}) when is_atom(name) and is_list(args),
     do: bare_operand?(left)
+
   defp single_call_body?({{:., _, _}, _, args}) when is_list(args), do: true
   # A map/struct update or construction, or a tuple, builds a value; a call
   # embedded in one of its fields is a computation, not a delegating rename
@@ -327,7 +450,11 @@ defmodule AlaLint.Rules do
   defp single_call_body?({:%{}, _, _}), do: false
   defp single_call_body?({:%, _, _}), do: false
   defp single_call_body?({:{}, _, _}), do: false
-  defp single_call_body?({name, _, args}) when is_atom(name) and is_list(args) and name not in @nontrivial_forms, do: true
+
+  defp single_call_body?({name, _, args})
+       when is_atom(name) and is_list(args) and name not in @nontrivial_forms,
+       do: true
+
   defp single_call_body?(_), do: false
 
   # A variable or a literal — not a call, not a struct/map/tuple construction.
@@ -337,7 +464,10 @@ defmodule AlaLint.Rules do
 
   # fun_id → {module_struct, fun_struct}, for locating a function-level finding.
   defp fun_lookup(model) do
-    for m <- model.modules, fun <- m.functions, into: %{}, do: {{m.name, fun.name, fun.arity}, {m, fun}}
+    for m <- model.modules,
+        fun <- m.functions,
+        into: %{},
+        do: {{m.name, fun.name, fun.arity}, {m, fun}}
   end
 
   defp longest_chain(graph, cost) do
@@ -384,7 +514,12 @@ defmodule AlaLint.Rules do
     g = model.dep_graph
 
     for {a, deps} <- g, b <- deps, b > a, reaches?(g, b, a) do
-      f(:r1, a, model, "modules #{a} ↔ #{b} form a dependency cycle (peer/communication coupling — an edge that does not drop)")
+      f(
+        :r1,
+        a,
+        model,
+        "modules #{a} ↔ #{b} form a dependency cycle (peer/communication coupling — an edge that does not drop)"
+      )
     end
   end
 
@@ -398,15 +533,24 @@ defmodule AlaLint.Rules do
     %{fun_index: fidx, peer_ok: peer_ok, units: units, names: names} = model.layers
     by_id = fun_lookup(model)
 
-    for {caller, callees} <- model.call_graph, callee <- callees,
-        ia = fidx[caller], ib = fidx[callee], ia != nil and ib != nil,
+    for {caller, callees} <- model.call_graph,
+        callee <- callees,
+        ia = fidx[caller],
+        ib = fidx[callee],
+        ia != nil and ib != nil,
         violation = altitude_violation(elem(caller, 0), elem(callee, 0), ia, ib, peer_ok, units) do
       {cmod, cname, car} = caller
       {tmod, tname, tar} = callee
       {m, fun} = Map.get(by_id, caller, {nil, nil})
 
-      f(:r1, cmod, model, m, fun && fun.line,
-        "#{short(cmod)}.#{cname}/#{car} [#{Enum.at(names, ia)}] → #{short(tmod)}.#{tname}/#{tar} [#{Enum.at(names, ib)}]: #{violation}")
+      f(
+        :r1,
+        cmod,
+        model,
+        m,
+        fun && fun.line,
+        "#{short(cmod)}.#{cname}/#{car} [#{Enum.at(names, ia)}] → #{short(tmod)}.#{tname}/#{tar} [#{Enum.at(names, ib)}]: #{violation}"
+      )
     end
   end
 
@@ -415,7 +559,8 @@ defmodule AlaLint.Rules do
   # altitude skip (a "long drop", ib ≫ ia) is NOT a smell. Do not add a check
   # that penalizes long drops. (See the checklist's "long drop" note.)
   defp altitude_violation(_a, _b, ia, ib, _peer_ok, _units) when ib < ia,
-    do: "knowledge flows UP (callee is more concrete) — edge must drop to a more abstract layer (R1)"
+    do:
+      "knowledge flows UP (callee is more concrete) — edge must drop to a more abstract layer (R1)"
 
   defp altitude_violation(a, b, ia, ib, peer_ok, units) when ia == ib do
     cond do
@@ -456,9 +601,17 @@ defmodule AlaLint.Rules do
 
   # ── R2: shared mutable state channels (advisory) ─────────────────────────
   def r2(model) do
-    for m <- model.modules, {{kind, op}, line} <- m.state_ops, kind in [:ets, :persistent_term, :agent] do
-      f(:r2, m.name, model, m, line,
-        "#{kind}.#{op} — shared mutable state channel; confirm it is not a back-channel between peers (R2)")
+    for m <- model.modules,
+        {{kind, op}, line} <- m.state_ops,
+        kind in [:ets, :persistent_term, :agent] do
+      f(
+        :r2,
+        m.name,
+        model,
+        m,
+        line,
+        "#{kind}.#{op} — shared mutable state channel; confirm it is not a back-channel between peers (R2)"
+      )
     end
   end
 
@@ -466,8 +619,18 @@ defmodule AlaLint.Rules do
   # Flags "policy-ish" literals: floats, integers ≥ 10 (excluding round
   # placeholders), and any string/atom literal that also looks like config.
   def r3(model) do
-    for m <- model.modules, r3_scannable?(model, m.name), {lit, line} <- m.literals, magic?(lit) do
-      f(:r3, m.name, model, m, line, "literal #{fmt_lit(lit)} in #{short(m.name)} below the composition — hoist it if it's an application literal, keep it if intrinsic to the abstraction (R3)")
+    for m <- model.modules,
+        r3_scannable?(model, m.name),
+        {lit, line} <- m.literals,
+        magic?(lit) do
+      f(
+        :r3,
+        m.name,
+        model,
+        m,
+        line,
+        "literal #{fmt_lit(lit)} in #{short(m.name)} below the composition — hoist it if it's an application literal, keep it if intrinsic to the abstraction (R3)"
+      )
     end
   end
 
@@ -485,14 +648,24 @@ defmodule AlaLint.Rules do
 
   @doc "Whether a literal is an application-literal candidate (a possible R3 hoist). Public so the encoder can seed the same `{app-literal?}` flags the source scan would raise."
   def magic?({:number, n}) when is_float(n), do: true
-  def magic?({:number, n}) when is_integer(n), do: n not in [0, 1, 2, -1, 10, 100, 1000, 24, 60] and n > 2
+
+  def magic?({:number, n}) when is_integer(n),
+    do: n not in [0, 1, 2, -1, 10, 100, 1000, 24, 60] and n > 2
+
   def magic?({:string, _}), do: false
   def magic?({:atom, _}), do: false
 
   # ── R4: hidden state — the process dictionary (exact) ────────────────────
   def r4(model) do
     for m <- model.modules, {{:process_dict, op}, line} <- m.state_ops do
-      f(:r4, m.name, model, m, line, "Process.#{op} — hidden state via the process dictionary; thread state as a value instead (R4)")
+      f(
+        :r4,
+        m.name,
+        model,
+        m,
+        line,
+        "Process.#{op} — hidden state via the process dictionary; thread state as a value instead (R4)"
+      )
     end
   end
 
@@ -503,8 +676,15 @@ defmodule AlaLint.Rules do
         MapSet.size(mods) >= 2 do
       owner = mods |> Enum.sort() |> hd()
       m = Enum.find(model.modules, &(&1.name == owner))
-      f(:r5, owner, model, m, m.line,
-        "literal #{fmt_lit(lit)} is repeated across #{MapSet.size(mods)} modules (#{mods |> Enum.sort() |> Enum.map(&short/1) |> Enum.join(", ")}) — single-source it (R5)")
+
+      f(
+        :r5,
+        owner,
+        model,
+        m,
+        m.line,
+        "literal #{fmt_lit(lit)} is repeated across #{MapSet.size(mods)} modules (#{mods |> Enum.sort() |> Enum.map(&short/1) |> Enum.join(", ")}) — single-source it (R5)"
+      )
     end
   end
 
@@ -526,12 +706,26 @@ defmodule AlaLint.Rules do
   def r6(model) do
     name_findings =
       for m <- model.modules, fun <- m.functions, meaningless_name?(fun.name) do
-        f(:r6, m.name, model, m, fun.line, "function #{short(m.name)}.#{fun.name}/#{fun.arity} has a meaningless name — name the concept or inline it (R6)")
+        f(
+          :r6,
+          m.name,
+          model,
+          m,
+          fun.line,
+          "function #{short(m.name)}.#{fun.name}/#{fun.arity} has a meaningless name — name the concept or inline it (R6)"
+        )
       end
 
     wrap_findings =
       for m <- model.modules, fun <- m.functions, not fun.private, primitive_wrapper?(fun) do
-        f(:r6, m.name, model, m, fun.line, "#{short(m.name)}.#{fun.name}/#{fun.arity} just wraps a primitive/stdlib call — not an abstraction (R6)")
+        f(
+          :r6,
+          m.name,
+          model,
+          m,
+          fun.line,
+          "#{short(m.name)}.#{fun.name}/#{fun.arity} just wraps a primitive/stdlib call — not an abstraction (R6)"
+        )
       end
 
     name_findings ++ wrap_findings
@@ -549,13 +743,16 @@ defmodule AlaLint.Rules do
   # the function is doing real work (a formula, composing values)
   # and is a legitimate abstraction, not a rename. This spares e.g.
   # `apply(oas, r) = (r + oas.offset) * oas.scale`, whose operand is a `+` expr.
-  defp primitive_wrapper?(%{body: {op, _, [a, b]}}) when op in [:+, :-, :*, :/, :>=, :<=, :>, :<, :==, :!=],
-    do: terminal_operand?(a) and terminal_operand?(b)
+  defp primitive_wrapper?(%{body: {op, _, [a, b]}})
+       when op in [:+, :-, :*, :/, :>=, :<=, :>, :<, :==, :!=],
+       do: terminal_operand?(a) and terminal_operand?(b)
 
   defp primitive_wrapper?(_), do: false
 
   # A bare variable (`{:x, _, ctx}` with atom context/nil) or a literal.
-  defp terminal_operand?({name, _, ctx}) when is_atom(name) and (is_atom(ctx) or is_nil(ctx)), do: true
+  defp terminal_operand?({name, _, ctx}) when is_atom(name) and (is_atom(ctx) or is_nil(ctx)),
+    do: true
+
   defp terminal_operand?(lit) when is_number(lit) or is_binary(lit) or is_atom(lit), do: true
   defp terminal_operand?(_), do: false
 
@@ -570,18 +767,38 @@ defmodule AlaLint.Rules do
     template_refs = Map.get(model, :template_refs, MapSet.new())
 
     dead =
-      for m <- model.modules, fun <- m.functions, fun.private, uniq_defp?(m, fun),
+      for m <- model.modules,
+          fun <- m.functions,
+          fun.private,
+          uniq_defp?(m, fun),
           Map.get(m.local_call_counts, fun.name, 0) == 0,
           not fun.macro_generated,
           not MapSet.member?(template_refs, to_string(fun.name)) do
-        f(:r7, m.name, model, m, fun.line, "private #{short(m.name)}.#{fun.name}/#{fun.arity} is never called — dead code (R7)")
+        f(
+          :r7,
+          m.name,
+          model,
+          m,
+          fun.line,
+          "private #{short(m.name)}.#{fun.name}/#{fun.arity} is never called — dead code (R7)"
+        )
       end
 
     trivial =
-      for m <- model.modules, fun <- m.functions, fun.private,
+      for m <- model.modules,
+          fun <- m.functions,
+          fun.private,
           Map.get(m.local_call_counts, fun.name, 0) == 1,
-          trivial?(fun.body), meaningless_name?(fun.name) do
-        f(:r7, m.name, model, m, fun.line, "private #{short(m.name)}.#{fun.name}/#{fun.arity} is a trivial single-use one-liner — inline it (R7)")
+          trivial?(fun.body),
+          meaningless_name?(fun.name) do
+        f(
+          :r7,
+          m.name,
+          model,
+          m,
+          fun.line,
+          "private #{short(m.name)}.#{fun.name}/#{fun.arity} is a trivial single-use one-liner — inline it (R7)"
+        )
       end
 
     dead ++ trivial
@@ -609,14 +826,32 @@ defmodule AlaLint.Rules do
 
   defp f(rule, module, model, nil, nil, message) do
     m = Enum.find(model.modules, &(&1.name == module))
-    %Finding{rule: rule, module: module, file: m && m.file, line: (m && m.line) || 0, weight: @weights[rule], severity: default_severity(rule), message: message}
+
+    %Finding{
+      rule: rule,
+      module: module,
+      file: m && m.file,
+      line: (m && m.line) || 0,
+      weight: @weights[rule],
+      severity: default_severity(rule),
+      message: message
+    }
   end
 
   defp f(rule, module, _model, %{} = mod, line, message) do
-    %Finding{rule: rule, module: module, file: mod.file, line: line || mod.line, weight: @weights[rule], severity: default_severity(rule), message: message}
+    %Finding{
+      rule: rule,
+      module: module,
+      file: mod.file,
+      line: line || mod.line,
+      weight: @weights[rule],
+      severity: default_severity(rule),
+      message: message
+    }
   end
 
-  defp short(name), do: String.replace_prefix(name, "Elixir.", "") |> String.split(".") |> List.last()
+  defp short(name),
+    do: String.replace_prefix(name, "Elixir.", "") |> String.split(".") |> List.last()
 
   defp fmt_lit({:string, s}), do: inspect(s)
   defp fmt_lit({:atom, a}), do: inspect(a)

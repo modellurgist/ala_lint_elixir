@@ -43,21 +43,31 @@ defmodule AlaLint do
     # aspirational purity, scored only under super-strict. Everything advisory is
     # still *reported* by default. `checks: %{rule => :scored}` promotes one rule.
     super_strict_only = [:r11, :public_surface, :r10_aggregate]
+
     enforce =
       cond do
-        super_strict -> Enum.uniq(Keyword.get(opts, :enforce, []) ++ Rules.advisory_rules() ++ [:r10_aggregate])
-        strict -> Enum.uniq(Keyword.get(opts, :enforce, []) ++ (Rules.advisory_rules() -- super_strict_only))
-        true -> Keyword.get(opts, :enforce, [])
+        super_strict ->
+          Enum.uniq(Keyword.get(opts, :enforce, []) ++ Rules.advisory_rules() ++ [:r10_aggregate])
+
+        strict ->
+          Enum.uniq(
+            Keyword.get(opts, :enforce, []) ++ (Rules.advisory_rules() -- super_strict_only)
+          )
+
+        true ->
+          Keyword.get(opts, :enforce, [])
       end
       |> Kernel.++(checks.scored)
       |> Enum.uniq()
 
     check_aggregates = strict or super_strict or Keyword.get(opts, :check_aggregates, false)
-    mode = cond do
-      super_strict -> :super_strict
-      strict -> :strict
-      true -> :normal
-    end
+
+    mode =
+      cond do
+        super_strict -> :super_strict
+        strict -> :strict
+        true -> :normal
+      end
 
     # thresholds precedence: explicit opt (a CLI `--set`) > `checks` map `max:` > default
     t = checks.thresholds
@@ -104,6 +114,7 @@ defmodule AlaLint do
   end
 
   defp put_layers(model, nil), do: Map.put(model, :layers, nil)
+
   defp put_layers(model, spec),
     do: Map.put(model, :layers, AlaLint.Layers.resolve(model.modules, spec))
 

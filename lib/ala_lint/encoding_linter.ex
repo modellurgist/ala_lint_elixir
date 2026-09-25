@@ -39,7 +39,10 @@ defmodule AlaLint.EncodingLinter do
     files = Path.wildcard(Path.join(root, "**/*.ala.md"))
     parsed = Enum.flat_map(files, &parse_file/1)
 
-    findings = Enum.flat_map(parsed, &findings_for/1) ++ height_findings(parsed) ++ app_share_findings(parsed)
+    findings =
+      Enum.flat_map(parsed, &findings_for/1) ++
+        height_findings(parsed) ++ app_share_findings(parsed)
+
     incomplete = Enum.flat_map(parsed, &incomplete_for/1)
 
     %{
@@ -61,7 +64,24 @@ defmodule AlaLint.EncodingLinter do
         cond do
           m = Regex.run(~r/^module\s+(\S+)\s+\[([^\]]*)\]/, line) ->
             [_, name, tag] = m
-            {maybe_push(mods, cur), %{name: name, tag: tag, level: level_in(line), entity: entity_in(line), file: file, line: n, function_count: 0, public_funs: 0, edges: [], states: [], contracts: [], configs: [], passthroughs: [], branches: []}}
+
+            {maybe_push(mods, cur),
+             %{
+               name: name,
+               tag: tag,
+               level: level_in(line),
+               entity: entity_in(line),
+               file: file,
+               line: n,
+               function_count: 0,
+               public_funs: 0,
+               edges: [],
+               states: [],
+               contracts: [],
+               configs: [],
+               passthroughs: [],
+               branches: []
+             }}
 
           cur == nil ->
             {mods, cur}
@@ -70,10 +90,24 @@ defmodule AlaLint.EncodingLinter do
             [_, fname] = fm
             kind = config_kind(line)
             configs = if kind, do: [{n, fname, kind} | cur.configs], else: cur.configs
-            passthroughs = if line =~ "~>", do: [{n, fname} | cur.passthroughs], else: cur.passthroughs
-            branches = if line =~ "(branches)", do: [{n, fname} | cur.branches], else: cur.branches
+
+            passthroughs =
+              if line =~ "~>", do: [{n, fname} | cur.passthroughs], else: cur.passthroughs
+
+            branches =
+              if line =~ "(branches)", do: [{n, fname} | cur.branches], else: cur.branches
+
             public_funs = cur.public_funs + if line =~ "(private)", do: 0, else: 1
-            {mods, %{cur | function_count: cur.function_count + 1, public_funs: public_funs, configs: configs, passthroughs: passthroughs, branches: branches}}
+
+            {mods,
+             %{
+               cur
+               | function_count: cur.function_count + 1,
+                 public_funs: public_funs,
+                 configs: configs,
+                 passthroughs: passthroughs,
+                 branches: branches
+             }}
 
           # `rest` is the tier token (`[tag]` or `@name-Lidx`) plus the drop/verify
           # note. Findings key off the note, so this tolerates both forms.
@@ -131,10 +165,24 @@ defmodule AlaLint.EncodingLinter do
       end
 
     state_findings =
-      for line <- m.states, do: finding(:r4, "hidden state `$` declared — confirm it is a real hidden channel, not legit instance state (R4)", m, line)
+      for line <- m.states,
+          do:
+            finding(
+              :r4,
+              "hidden state `$` declared — confirm it is a real hidden channel, not legit instance state (R4)",
+              m,
+              line
+            )
 
     contract_findings =
-      for {line, _txt} <- m.contracts, do: finding(:r5, "silent contract `q` declared — confirm it should be single-sourced (R5)", m, line)
+      for {line, _txt} <- m.contracts,
+          do:
+            finding(
+              :r5,
+              "silent contract `q` declared — confirm it should be single-sourced (R5)",
+              m,
+              line
+            )
 
     # `{app-literal}` = a reviewer asserted this literal is an application literal.
     # Application literals are allowed in the top/config tier (level 0) and flagged
@@ -143,32 +191,77 @@ defmodule AlaLint.EncodingLinter do
     config_findings =
       for {line, fname, :config} <- m.configs, layer_index(m.level) != 0 do
         where = if m.level, do: " (level #{m.level}, below the composition)", else: ""
-        finding(:r3, "#{fname} [#{m.tag}] asserts {app-literal}#{where} — an application literal belongs at the composition/top; hoist it (R3)", m, line)
+
+        finding(
+          :r3,
+          "#{fname} [#{m.tag}] asserts {app-literal}#{where} — an application literal belongs at the composition/top; hoist it (R3)",
+          m,
+          line
+        )
       end
 
     entity_findings =
       case m.entity do
-        :aggregate -> [finding(:r10_aggregate, "module #{m.name} shares a domain entity across too many peers — pull the shared type down or narrow it (R10 aggregate)", m, m.line)]
-        :entity -> [finding(:r10, "module #{m.name} shares a domain entity/struct with a peer — a common entity couples them; give each its own view or push it down (R10)", m, m.line)]
-        :none -> []
+        :aggregate ->
+          [
+            finding(
+              :r10_aggregate,
+              "module #{m.name} shares a domain entity across too many peers — pull the shared type down or narrow it (R10 aggregate)",
+              m,
+              m.line
+            )
+          ]
+
+        :entity ->
+          [
+            finding(
+              :r10,
+              "module #{m.name} shares a domain entity/struct with a peer — a common entity couples them; give each its own view or push it down (R10)",
+              m,
+              m.line
+            )
+          ]
+
+        :none ->
+          []
       end
 
     passthrough_findings =
       for {line, fname} <- m.passthroughs do
-        finding(:passthrough, "#{fname} is a pass-through (`~>`, 1 caller → 1 cross-module callee); it renames a call without hiding a decision — consider inlining (R7-adjacent)", m, line)
+        finding(
+          :passthrough,
+          "#{fname} is a pass-through (`~>`, 1 caller → 1 cross-module callee); it renames a call without hiding a decision — consider inlining (R7-adjacent)",
+          m,
+          line
+        )
       end
 
     branch_findings =
       for {line, fname} <- m.branches do
-        finding(:r11, "#{fname} is an application-layer function that branches (`(branches)`) — the top should compose, not decide; push the choice down (R11)", m, line)
+        finding(
+          :r11,
+          "#{fname} is an application-layer function that branches (`(branches)`) — the top should compose, not decide; push the choice down (R11)",
+          m,
+          line
+        )
       end
 
     surface_findings =
       if m.public_funs > @max_public_funs,
-        do: [finding(:public_surface, "module #{m.name} exposes #{m.public_funs} public functions (> #{@max_public_funs}) — a wide surface is hard to depend on; consider splitting or privatising (advisory)", m, m.line)],
+        do: [
+          finding(
+            :public_surface,
+            "module #{m.name} exposes #{m.public_funs} public functions (> #{@max_public_funs}) — a wide surface is hard to depend on; consider splitting or privatising (advisory)",
+            m,
+            m.line
+          )
+        ],
         else: []
 
-    edge_findings ++ state_findings ++ contract_findings ++ config_findings ++
+    edge_findings ++
+      state_findings ++
+      contract_findings ++
+      config_findings ++
       entity_findings ++ passthrough_findings ++ branch_findings ++ surface_findings
   end
 
@@ -178,10 +271,20 @@ defmodule AlaLint.EncodingLinter do
   # flagged advisory-approximate.
   defp height_findings(parsed) do
     known = MapSet.new(parsed, & &1.name)
-    graph = Map.new(parsed, fn m -> {m.name, m.edges |> Enum.map(& &1.dep) |> Enum.filter(&MapSet.member?(known, &1)) |> Enum.uniq()} end)
+
+    graph =
+      Map.new(parsed, fn m ->
+        {m.name,
+         m.edges |> Enum.map(& &1.dep) |> Enum.filter(&MapSet.member?(known, &1)) |> Enum.uniq()}
+      end)
 
     for m <- parsed, d = longest_chain(m.name, graph, MapSet.new()), d > @max_height do
-      finding(:height, "module #{m.name} sits atop a dependency chain #{d} deep (> #{@max_height}) — collapse intra-module private chains or flatten (advisory, approximate at module granularity)", m, m.line)
+      finding(
+        :height,
+        "module #{m.name} sits atop a dependency chain #{d} deep (> #{@max_height}) — collapse intra-module private chains or flatten (advisory, approximate at module granularity)",
+        m,
+        m.line
+      )
     end
   end
 
@@ -192,17 +295,34 @@ defmodule AlaLint.EncodingLinter do
   # under-counts — approximate, like height.
   defp app_share_findings(parsed) do
     total = parsed |> Enum.map(& &1.function_count) |> Enum.sum()
-    app = parsed |> Enum.filter(&(layer_index(&1.level) == 0)) |> Enum.map(& &1.function_count) |> Enum.sum()
+
+    app =
+      parsed
+      |> Enum.filter(&(layer_index(&1.level) == 0))
+      |> Enum.map(& &1.function_count)
+      |> Enum.sum()
 
     if total > 0 and app / total > @max_app_share do
       pct = round(app / total * 100)
-      [%Finding{rule: :r11, message: "the application layer is #{pct}% of functions (> #{round(@max_app_share * 100)}%) — the top should be mostly wiring + config, not logic (R11 aggregate, approximate: assumes level 0 is the app tier)", module: "(project)", file: nil, line: 0, weight: weight(:r11)}]
+
+      [
+        %Finding{
+          rule: :r11,
+          message:
+            "the application layer is #{pct}% of functions (> #{round(@max_app_share * 100)}%) — the top should be mostly wiring + config, not logic (R11 aggregate, approximate: assumes level 0 is the app tier)",
+          module: "(project)",
+          file: nil,
+          line: 0,
+          weight: weight(:r11)
+        }
+      ]
     else
       []
     end
   end
 
   defp layer_index(nil), do: nil
+
   defp layer_index(level) do
     case Regex.run(~r/-L(\d+)$/, level) do
       [_, i] -> String.to_integer(i)
@@ -232,14 +352,21 @@ defmodule AlaLint.EncodingLinter do
   end
 
   defp edge_message(:r1, %{note: note} = e) do
-    kind = if note =~ "UP", do: "upward edge (knowledge flows up)", else: "cross-peer edge (feature↔feature)"
+    kind =
+      if note =~ "UP",
+        do: "upward edge (knowledge flows up)",
+        else: "cross-peer edge (feature↔feature)"
+
     "#{kind} → #{e.dep} (R1, from the encoding)"
   end
 
   defp incomplete_for(m) do
     tag =
       if m.tag in ["?", ""],
-        do: [{m.line, "module #{m.name} has an unresolved [?] semantic tag — state what it knows (layer #{m.level || "unassigned"})"}],
+        do: [
+          {m.line,
+           "module #{m.name} has an unresolved [?] semantic tag — state what it knows (layer #{m.level || "unassigned"})"}
+        ],
         else: []
 
     edges =
@@ -249,14 +376,24 @@ defmodule AlaLint.EncodingLinter do
 
     configs =
       for {line, fname, :candidate} <- m.configs do
-        {line, "#{fname} has {app-literal?} — resolve to {app-literal} (application literal, belongs at the top) or {intrinsic-literal} (intrinsic to the abstraction, kept local)"}
+        {line,
+         "#{fname} has {app-literal?} — resolve to {app-literal} (application literal, belongs at the top) or {intrinsic-literal} (intrinsic to the abstraction, kept local)"}
       end
 
-    Enum.map(tag ++ edges ++ configs, fn {line, msg} -> %{module: m.name, file: m.file, line: line, message: msg} end)
+    Enum.map(tag ++ edges ++ configs, fn {line, msg} ->
+      %{module: m.name, file: m.file, line: line, message: msg}
+    end)
   end
 
   defp finding(rule, message, m, line) do
-    %Finding{rule: rule, message: message, module: m.name, file: m.file, line: line, weight: weight(rule)}
+    %Finding{
+      rule: rule,
+      message: message,
+      module: m.name,
+      file: m.file,
+      line: line,
+      weight: weight(rule)
+    }
   end
 
   defp weight(rule), do: Map.get(AlaLint.Rules.weights(), rule, 1)

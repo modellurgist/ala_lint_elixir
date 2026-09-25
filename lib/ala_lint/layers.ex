@@ -74,8 +74,11 @@ defmodule AlaLint.Layers do
     # can opt in with `config: true` — so an app tier with sub-layers can hold
     # its "diagram config" in whichever sub-layer owns it, not just index 0.
     # Default (nothing declared): the top/composition layer, as before.
-    declared_config = for {t, i} <- indexed, layer_opt(t, :config, false), into: MapSet.new(), do: i
-    config_layers = if MapSet.size(declared_config) == 0, do: MapSet.new([0]), else: declared_config
+    declared_config =
+      for {t, i} <- indexed, layer_opt(t, :config, false), into: MapSet.new(), do: i
+
+    config_layers =
+      if MapSet.size(declared_config) == 0, do: MapSet.new([0]), else: declared_config
 
     # Application-layer tiers. Calls *within* the app layer don't add abstraction
     # height — the whole app layer is one altitude — because it is wiring with
@@ -123,6 +126,7 @@ defmodule AlaLint.Layers do
   otherwise the whole module name is its own unit.
   """
   def unit(mod, nil), do: mod
+
   def unit(mod, %Regex{} = re) do
     case Regex.run(re, mod) do
       [_, cap | _] -> cap
@@ -142,7 +146,9 @@ defmodule AlaLint.Layers do
   defp by_uses(m, spec) do
     Enum.find_value(Enum.with_index(spec), fn {t, i} ->
       ups = layer_opt(t, :uses, [])
-      if ups != [] and Enum.any?(m.uses, fn u -> Enum.any?(ups, &pattern_match?(&1, u)) end), do: i
+
+      if ups != [] and Enum.any?(m.uses, fn u -> Enum.any?(ups, &pattern_match?(&1, u)) end),
+        do: i
     end)
   end
 

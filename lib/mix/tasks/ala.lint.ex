@@ -59,8 +59,15 @@ defmodule Mix.Tasks.Ala.Lint do
     {opts, paths, invalid} =
       OptionParser.parse(argv,
         strict: [
-          limit: :integer, min_score: :integer, config_module: :keep, layers_module: :string,
-          enforce: :keep, disable: :keep, set: :keep, strict: :boolean, super_strict: :boolean,
+          limit: :integer,
+          min_score: :integer,
+          config_module: :keep,
+          layers_module: :string,
+          enforce: :keep,
+          disable: :keep,
+          set: :keep,
+          strict: :boolean,
+          super_strict: :boolean,
           list_checks: :boolean
         ],
         aliases: [l: :limit]
@@ -70,16 +77,30 @@ defmodule Mix.Tasks.Ala.Lint do
     file = AlaLint.Config.load()
 
     roots = if paths == [], do: "lib", else: paths
-    config_modules = Keyword.get_values(opts, :config_module) ++ Map.get(file, :config_modules, [])
+
+    config_modules =
+      Keyword.get_values(opts, :config_module) ++ Map.get(file, :config_modules, [])
+
     enforce = opts |> Keyword.get_values(:enforce) |> Enum.map(&String.to_atom/1)
     disabled = opts |> Keyword.get_values(:disable) |> Enum.map(&String.to_atom/1)
     layers_module = opts[:layers_module] || Map.get(file, :layers_module)
     layers = AlaLint.Layers.load(layers_module: layers_module)
 
     {sets, bad_sets} = parse_sets(Keyword.get_values(opts, :set))
-    Enum.each(bad_sets, &Mix.shell().info("ignoring unknown --set (try one of: #{Enum.join(AlaLint.Config.set_keys(), ", ")}): #{&1}"))
+
+    Enum.each(
+      bad_sets,
+      &Mix.shell().info(
+        "ignoring unknown --set (try one of: #{Enum.join(AlaLint.Config.set_keys(), ", ")}): #{&1}"
+      )
+    )
+
     min_score = sets[:min_score] || opts[:min_score] || Map.get(file, :min_score)
-    threshold_opts = sets |> Map.take([:max_height, :max_app_share, :max_module_loc, :max_public_funs]) |> Enum.into([])
+
+    threshold_opts =
+      sets
+      |> Map.take([:max_height, :max_app_share, :max_module_loc, :max_public_funs])
+      |> Enum.into([])
 
     analyze_opts =
       [
@@ -97,9 +118,14 @@ defmodule Mix.Tasks.Ala.Lint do
     Mix.shell().info(AlaLint.Report.to_text(report, limit: opts[:limit] || 40))
 
     case min_score do
-      nil -> :ok
-      min when report.score < min -> Mix.raise("ALA score #{report.score} is below --min-score #{min}")
-      min -> Mix.shell().info("ok — score #{report.score} meets --min-score #{min}")
+      nil ->
+        :ok
+
+      min when report.score < min ->
+        Mix.raise("ALA score #{report.score} is below --min-score #{min}")
+
+      min ->
+        Mix.shell().info("ok — score #{report.score} meets --min-score #{min}")
     end
   end
 

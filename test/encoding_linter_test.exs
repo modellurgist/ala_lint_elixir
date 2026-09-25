@@ -73,7 +73,12 @@ defmodule EncodingLinterTest do
     """)
 
     r = AlaLint.EncodingLinter.lint(dir)
-    assert Enum.any?(r.findings, &(&1.rule == :r1 and &1.message =~ "upward" and &1.message =~ "App.Web"))
+
+    assert Enum.any?(
+             r.findings,
+             &(&1.rule == :r1 and &1.message =~ "upward" and &1.message =~ "App.Web")
+           )
+
     refute Enum.any?(r.findings, &(&1.message =~ "App.Domain"))
     File.rm_rf!(dir)
   end
@@ -142,7 +147,12 @@ defmodule EncodingLinterTest do
     """)
 
     r = AlaLint.EncodingLinter.lint(dir)
-    assert Enum.any?(r.findings, &(&1.rule == :r11 and &1.message =~ "run/1" and &1.message =~ "branches"))
+
+    assert Enum.any?(
+             r.findings,
+             &(&1.rule == :r11 and &1.message =~ "run/1" and &1.message =~ "branches")
+           )
+
     assert Enum.any?(r.findings, &(&1.rule == :passthrough and &1.message =~ "fwd/1"))
     File.rm_rf!(dir)
   end
@@ -152,7 +162,12 @@ defmodule EncodingLinterTest do
     File.mkdir_p!(dir)
 
     pubs = for i <- 1..13, do: "  f App.Big.f#{i}/0   [domain]"
-    File.write!(Path.join(dir, "big.ex.ala.md"), "module App.Big   [domain]  @domain-L1\n" <> Enum.join(pubs, "\n") <> "\n")
+
+    File.write!(
+      Path.join(dir, "big.ex.ala.md"),
+      "module App.Big   [domain]  @domain-L1\n" <> Enum.join(pubs, "\n") <> "\n"
+    )
+
     File.write!(Path.join(dir, "small.ex.ala.md"), """
     module App.Small   [domain]  @domain-L1
       f App.Small.pub/0   [domain]
@@ -179,7 +194,13 @@ defmodule EncodingLinterTest do
     """)
 
     r = AlaLint.EncodingLinter.lint(dir)
-    assert Enum.any?(r.findings, &(&1.rule == :r11 and &1.module == "(project)" and &1.message =~ "application layer is 67%"))
+
+    assert Enum.any?(
+             r.findings,
+             &(&1.rule == :r11 and &1.module == "(project)" and
+                 &1.message =~ "application layer is 67%")
+           )
+
     File.rm_rf!(dir)
   end
 end

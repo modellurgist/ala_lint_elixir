@@ -19,10 +19,15 @@ defmodule AlaLint.Encoder do
     files =
       model.modules
       |> Enum.group_by(& &1.file)
-      |> Enum.map(fn {file, mods} -> {relpath(file, model.root), encode_file(mods, model, marks)} end)
+      |> Enum.map(fn {file, mods} ->
+        {relpath(file, model.root), encode_file(mods, model, marks)}
+      end)
       |> Enum.sort()
 
-    [{"INDEX.md", index(files, model)} | Enum.map(files, fn {rel, body} -> {rel <> ".ala.md", body} end)]
+    [
+      {"INDEX.md", index(files, model)}
+      | Enum.map(files, fn {rel, body} -> {rel <> ".ala.md", body} end)
+    ]
   end
 
   # The finding-relevant facts the tool can determine and stamp into the encoding,
@@ -34,14 +39,21 @@ defmodule AlaLint.Encoder do
     %{
       passthrough: MapSet.new(AlaLint.Rules.passthrough_ids(model), fn {id, _callee} -> id end),
       entity: model |> AlaLint.Rules.r10() |> MapSet.new(& &1.module),
-      aggregate: Map.put(model, :check_aggregates, true) |> AlaLint.Rules.r10_aggregate() |> MapSet.new(& &1.module)
+      aggregate:
+        Map.put(model, :check_aggregates, true)
+        |> AlaLint.Rules.r10_aggregate()
+        |> MapSet.new(& &1.module)
     }
   end
 
   defp relpath(file, root), do: Path.relative_to(file, root)
 
   defp index(files, model) do
-    layered = if model.layers, do: "with a layer map (levels `@name-Lidx` assigned; semantic `[?]` tags for a human)", else: "WITHOUT a layer map (no levels; `[?]` tags for a human)"
+    layered =
+      if model.layers,
+        do: "with a layer map (levels `@name-Lidx` assigned; semantic `[?]` tags for a human)",
+        else: "WITHOUT a layer map (no levels; `[?]` tags for a human)"
+
     rows = Enum.map_join(files, "\n", fn {rel, _} -> "- `#{rel}.ala.md`" end)
 
     """
@@ -92,11 +104,14 @@ defmodule AlaLint.Encoder do
     funs =
       m.functions
       |> Enum.map(fn f ->
-        mark = if MapSet.member?(cfg, {f.name, f.arity, f.line}), do: "   {app-literal?}", else: ""
+        mark =
+          if MapSet.member?(cfg, {f.name, f.arity, f.line}), do: "   {app-literal?}", else: ""
+
         flayer = fun_layer_of({m.name, f.name, f.arity}, model)
         override = if flayer != nil and flayer != mlayer, do: level_suffix(flayer), else: ""
         pt = if MapSet.member?(marks.passthrough, {m.name, f.name, f.arity}), do: "  ~>", else: ""
         br = if app_branchy?(f, m, model), do: "  (branches)", else: ""
+
         "  f #{m.name}.#{f.name}/#{f.arity}#{if f.private, do: " (private)", else: ""}   [?]#{mark}#{override}#{pt}#{br}"
       end)
       |> Enum.join("\n")
@@ -139,7 +154,9 @@ defmodule AlaLint.Encoder do
       |> Enum.sort()
 
     case deps do
-      [] -> "  (no project edges)\n"
+      [] ->
+        "  (no project edges)\n"
+
       _ ->
         lines =
           Enum.map_join(deps, "\n", fn dep ->
@@ -170,10 +187,14 @@ defmodule AlaLint.Encoder do
 
   # A function's/module's layer as `{name, index}` (index 0 = top), or nil.
   defp layer_of(_name, %{layers: nil}), do: nil
-  defp layer_of(name, %{layers: %{index: idx, names: names}}), do: at_layer(Map.get(idx, name), names)
+
+  defp layer_of(name, %{layers: %{index: idx, names: names}}),
+    do: at_layer(Map.get(idx, name), names)
 
   defp fun_layer_of(_id, %{layers: nil}), do: nil
-  defp fun_layer_of(id, %{layers: %{fun_index: fi, names: names}}), do: at_layer(Map.get(fi, id), names)
+
+  defp fun_layer_of(id, %{layers: %{fun_index: fi, names: names}}),
+    do: at_layer(Map.get(fi, id), names)
 
   defp at_layer(nil, _names), do: nil
   defp at_layer(i, names), do: {to_string(Enum.at(names, i)), i}
@@ -186,14 +207,22 @@ defmodule AlaLint.Encoder do
 
   defp encode_state(m) do
     kinds = m.state_ops |> Enum.map(fn {{k, _}, _} -> k end) |> Enum.uniq()
-    if kinds == [], do: "", else: "  $ #{Enum.join(kinds, ", ")}   -- VERIFY: hidden channel, or legit instance state? (R4)\n"
+
+    if kinds == [],
+      do: "",
+      else:
+        "  $ #{Enum.join(kinds, ", ")}   -- VERIFY: hidden channel, or legit instance state? (R4)\n"
   end
 
   # Functions that own at least one configuration-candidate literal, by the same
   # `magic?` test the source R3 scan uses. A literal at line L belongs to the
   # function with the greatest def-line ≤ L (the R3 attribution rule).
   defp cfg_functions(m) do
-    for {lit, line} <- m.literals, AlaLint.Rules.magic?(lit), f = owner_fun(m.functions, line), f != nil, into: MapSet.new() do
+    for {lit, line} <- m.literals,
+        AlaLint.Rules.magic?(lit),
+        f = owner_fun(m.functions, line),
+        f != nil,
+        into: MapSet.new() do
       {f.name, f.arity, f.line}
     end
   end
@@ -214,7 +243,9 @@ defmodule AlaLint.Encoder do
       |> Enum.uniq()
       |> Enum.take(6)
 
-    if shared == [], do: "", else: "  q #{Enum.map_join(shared, ", ", &inspect/1)}   -- VERIFY: silent contract to single-source? (R5)\n"
+    if shared == [],
+      do: "",
+      else:
+        "  q #{Enum.map_join(shared, ", ", &inspect/1)}   -- VERIFY: silent contract to single-source? (R5)\n"
   end
-
 end

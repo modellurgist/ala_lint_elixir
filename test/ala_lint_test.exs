@@ -27,7 +27,10 @@ defmodule AlaLintTest do
   end
 
   test "detects the dead private (R7)", %{report: r} do
-    assert Enum.any?(r.findings, &(&1.rule == :r7 and &1.message =~ "dead" and &1.message =~ "dead"))
+    assert Enum.any?(
+             r.findings,
+             &(&1.rule == :r7 and &1.message =~ "dead" and &1.message =~ "dead")
+           )
   end
 
   test "detects the meaningless name (R6)", %{report: r} do
@@ -85,8 +88,13 @@ defmodule AlaLintTest do
 
     r = AlaLint.analyze(dir)
     pt = Enum.filter(r.findings, &(&1.rule == :passthrough))
-    assert Enum.any?(pt, &(&1.message =~ "forward/1")), "a public cross-module rename is a pass-through"
-    refute Enum.any?(pt, &(&1.message =~ "internal")), "a private helper is internal decomposition, not flagged"
+
+    assert Enum.any?(pt, &(&1.message =~ "forward/1")),
+           "a public cross-module rename is a pass-through"
+
+    refute Enum.any?(pt, &(&1.message =~ "internal")),
+           "a private helper is internal decomposition, not flagged"
+
     refute Enum.any?(pt, &(&1.message =~ "keep"))
     assert Enum.all?(pt, &(&1.severity == :warn))
     File.rm_rf!(dir)
@@ -114,7 +122,10 @@ defmodule AlaLintTest do
 
     r = AlaLint.analyze(dir)
     dead = Enum.filter(r.findings, &(&1.rule == :r7 and &1.message =~ "dead code"))
-    refute Enum.any?(dead, &(&1.message =~ "tabs/1")), "a component invoked in ~H must not be dead"
+
+    refute Enum.any?(dead, &(&1.message =~ "tabs/1")),
+           "a component invoked in ~H must not be dead"
+
     assert Enum.any?(dead, &(&1.message =~ "genuinely_dead")), "a truly-uncalled defp still flags"
     File.rm_rf!(dir)
   end
@@ -192,8 +203,10 @@ defmodule AlaLintTest do
     ''')
 
     r = AlaLint.analyze(dir)
+
     refute Enum.any?(r.findings, &(&1.rule == :r5 and &1.message =~ "/cart/success")),
            "a verified-route string in ~p is compile-checked, not a silent contract"
+
     File.rm_rf!(dir)
   end
 
@@ -214,7 +227,10 @@ defmodule AlaLintTest do
 
     r = AlaLint.analyze(dir)
     pt = Enum.filter(r.findings, &(&1.rule == :passthrough))
-    refute Enum.any?(pt, &(&1.message =~ "total")), "piping a call into another call transforms, it does not rename"
+
+    refute Enum.any?(pt, &(&1.message =~ "total")),
+           "piping a call into another call transforms, it does not rename"
+
     File.rm_rf!(dir)
   end
 
@@ -235,7 +251,10 @@ defmodule AlaLintTest do
 
     r = AlaLint.analyze(dir)
     pt = Enum.filter(r.findings, &(&1.rule == :passthrough))
-    refute Enum.any?(pt, &(&1.message =~ "add")), "building a struct with an embedded call is not a rename"
+
+    refute Enum.any?(pt, &(&1.message =~ "add")),
+           "building a struct with an embedded call is not a rename"
+
     File.rm_rf!(dir)
   end
 
@@ -305,11 +324,15 @@ defmodule AlaLintTest do
 
     test "assigns a layer by filesystem path glob", %{report: r} do
       # App.Cart lives under features/ → feature; peer call to App.Wish flagged
-      assert Enum.any?(r.findings, &(&1.rule == :r1 and &1.message =~ "Cart.peek" and &1.message =~ "cross-peer"))
+      assert Enum.any?(
+               r.findings,
+               &(&1.rule == :r1 and &1.message =~ "Cart.peek" and &1.message =~ "cross-peer")
+             )
     end
 
     test "an @ala_layer tag overrides the module's convention", %{report: r} do
       idx = r.layer_coverage
+
       # as_feature is tagged feature though its module is domain — it's assigned (not unassigned)
       refute Enum.any?(idx.unassigned, fn {_m, n, _a} -> n == :as_feature end)
     end
@@ -492,12 +515,19 @@ defmodule AlaLintTest do
     end
 
     test "R11 flags branching in an application-layer function (advisory)", %{report: r} do
-      assert Enum.any?(r.advisory_findings, &(&1.rule == :r11 and &1.message =~ "Page.handle/1 branches"))
+      assert Enum.any?(
+               r.advisory_findings,
+               &(&1.rule == :r11 and &1.message =~ "Page.handle/1 branches")
+             )
+
       refute Enum.any?(r.scored_findings, &(&1.rule == :r11))
     end
 
     test "R11 flags an oversized application layer share", %{report: r} do
-      assert Enum.any?(r.advisory_findings, &(&1.rule == :r11 and &1.message =~ "application layer is"))
+      assert Enum.any?(
+               r.advisory_findings,
+               &(&1.rule == :r11 and &1.message =~ "application layer is")
+             )
     end
 
     test "R11 flags a branchy clause of a multi-clause def even when the last clause is straight" do
@@ -515,8 +545,13 @@ defmodule AlaLintTest do
 
       layers = [{:app, [~r/AppWeb\./], peer_ok: true}]
       r = AlaLint.analyze(dir, layers: layers)
-      assert Enum.any?(r.advisory_findings, &(&1.rule == :r11 and &1.message =~ "handle/2 branches")),
+
+      assert Enum.any?(
+               r.advisory_findings,
+               &(&1.rule == :r11 and &1.message =~ "handle/2 branches")
+             ),
              "a branchy non-surviving clause must still be flagged"
+
       File.rm_rf!(dir)
     end
   end
@@ -524,7 +559,12 @@ defmodule AlaLintTest do
   test "R10 does not fire without a layer map (needs to know features)" do
     dir = Path.join(System.tmp_dir!(), "ala_r10n_#{System.unique_integer([:positive])}")
     File.mkdir_p!(dir)
-    File.write!(Path.join(dir, "m.ex"), "defmodule Ent do\n defstruct [:a]\nend\ndefmodule A do\n def x, do: %Ent{}\nend\ndefmodule B do\n def y, do: %Ent{}\nend\n")
+
+    File.write!(
+      Path.join(dir, "m.ex"),
+      "defmodule Ent do\n defstruct [:a]\nend\ndefmodule A do\n def x, do: %Ent{}\nend\ndefmodule B do\n def y, do: %Ent{}\nend\n"
+    )
+
     r = AlaLint.analyze(dir)
     refute Enum.any?(r.findings, &(&1.rule == :r10))
     File.rm_rf!(dir)
@@ -533,9 +573,21 @@ defmodule AlaLintTest do
   test "strict scores advisories; super-strict runs and scores the shared-aggregate check" do
     dir = Path.join(System.tmp_dir!(), "ala_strict_#{System.unique_integer([:positive])}")
     File.mkdir_p!(Path.join(dir, "features"))
-    File.write!(Path.join(dir, "cart.ex"), "defmodule App.Domain.Cart do\n  defstruct [:id]\nend\n")
-    File.write!(Path.join(dir, "features/a.ex"), "defmodule App.Features.A do\n  alias App.Domain.Cart\n  def x, do: %Cart{}\nend\n")
-    File.write!(Path.join(dir, "features/b.ex"), "defmodule App.Features.B do\n  alias App.Domain.Cart\n  def y, do: %Cart{}\nend\n")
+
+    File.write!(
+      Path.join(dir, "cart.ex"),
+      "defmodule App.Domain.Cart do\n  defstruct [:id]\nend\n"
+    )
+
+    File.write!(
+      Path.join(dir, "features/a.ex"),
+      "defmodule App.Features.A do\n  alias App.Domain.Cart\n  def x, do: %Cart{}\nend\n"
+    )
+
+    File.write!(
+      Path.join(dir, "features/b.ex"),
+      "defmodule App.Features.B do\n  alias App.Domain.Cart\n  def y, do: %Cart{}\nend\n"
+    )
 
     layers = [
       {:feature, [~r/App\.Features\./], peer_ok: false, unit: ~r/(App\.Features\.[^.]+)/},
@@ -548,13 +600,19 @@ defmodule AlaLintTest do
 
     # the shared domain aggregate is invisible normally, advisory under strict, scored under super-strict
     refute Enum.any?(normal.findings, &(&1.rule == :r10_aggregate))
-    assert Enum.any?(strict.advisory_findings, &(&1.rule == :r10_aggregate and &1.message =~ "Cart"))
+
+    assert Enum.any?(
+             strict.advisory_findings,
+             &(&1.rule == :r10_aggregate and &1.message =~ "Cart")
+           )
+
     assert Enum.any?(sup.scored_findings, &(&1.rule == :r10_aggregate))
   end
 
   test "R11 is advisory under strict, scored only under super-strict" do
     dir = Path.join(System.tmp_dir!(), "ala_r11tier_#{System.unique_integer([:positive])}")
     File.mkdir_p!(dir)
+
     File.write!(Path.join(dir, "p.ex"), """
     defmodule AppWeb.Page do
       def handle(x), do: if x, do: :a, else: :b
@@ -585,6 +643,7 @@ defmodule AlaLintTest do
   test "a private call chain inside one module does not add abstraction height" do
     dir = Path.join(System.tmp_dir!(), "ala_ht_#{System.unique_integer([:positive])}")
     File.mkdir_p!(dir)
+
     File.write!(Path.join(dir, "m.ex"), """
     defmodule Mono do
       def go(x), do: a(x)
@@ -593,15 +652,19 @@ defmodule AlaLintTest do
       defp c(x), do: x
     end
     """)
+
     r = AlaLint.analyze(dir, max_height: 1)
+
     refute Enum.any?(r.findings, &(&1.rule == :height)),
            "a chain of private helpers inside one module is internal decomposition, not depth"
+
     File.rm_rf!(dir)
   end
 
   test "public_surface flags a wide public API, only under super-strict, and spares an encapsulated module" do
     dir = Path.join(System.tmp_dir!(), "ala_ps_#{System.unique_integer([:positive])}")
     File.mkdir_p!(dir)
+
     File.write!(Path.join(dir, "m.ex"), """
     defmodule Wide do
       def a(x), do: x
@@ -615,10 +678,13 @@ defmodule AlaLintTest do
       defp h2(x), do: x
     end
     """)
+
     r = AlaLint.analyze(dir, max_public_funs: 2)
     assert Enum.any?(r.advisory_findings, &(&1.rule == :public_surface and &1.message =~ "Wide"))
     refute Enum.any?(r.findings, &(&1.rule == :public_surface and &1.message =~ "Tight"))
-    refute Enum.any?(r.scored_findings, &(&1.rule == :public_surface)), "public_surface is not scored by strict"
+
+    refute Enum.any?(r.scored_findings, &(&1.rule == :public_surface)),
+           "public_surface is not scored by strict"
 
     ss = AlaLint.analyze(dir, max_public_funs: 2, super_strict: true)
     assert Enum.any?(ss.scored_findings, &(&1.rule == :public_surface)), "super-strict scores it"
@@ -627,7 +693,15 @@ defmodule AlaLintTest do
 
   describe "configuration" do
     test "normalize_checks maps levels and thresholds" do
-      n = AlaLint.Config.normalize_checks(%{r7: :scored, r11: :off, r1: :advisory, height: [max: 3], module_size: [level: :off, max: 400]})
+      n =
+        AlaLint.Config.normalize_checks(%{
+          r7: :scored,
+          r11: :off,
+          r1: :advisory,
+          height: [max: 3],
+          module_size: [level: :off, max: 400]
+        })
+
       assert :r7 in n.scored
       assert :r11 in n.disabled and :module_size in n.disabled
       assert :r1 in n.soft
@@ -663,6 +737,7 @@ defmodule AlaLintTest do
     test "checks map promotes an advisory rule to scored and retunes a threshold" do
       dir = Path.join(System.tmp_dir!(), "ala_cfg2_#{System.unique_integer([:positive])}")
       File.mkdir_p!(dir)
+
       File.write!(Path.join(dir, "m.ex"), """
       defmodule Mono do
         def go(x), do: a(x)
@@ -670,9 +745,14 @@ defmodule AlaLintTest do
         defp b(x), do: x
       end
       """)
+
       # height default would not fire (intra-module collapses to 0); force max 0 is meaningless,
       # so instead check a promoted advisory rule surfaces in scored_findings via checks.
-      File.write!(Path.join(dir, "d.ex"), "defmodule D do\n  def only(_x), do: :never\n  defp dead(_x), do: :x\nend\n")
+      File.write!(
+        Path.join(dir, "d.ex"),
+        "defmodule D do\n  def only(_x), do: :never\n  defp dead(_x), do: :x\nend\n"
+      )
+
       r = AlaLint.analyze(dir, checks: %{r7: :scored})
       assert Enum.any?(r.scored_findings, &(&1.rule == :r7)), "checks: %{r7: :scored} promotes R7"
       File.rm_rf!(dir)
@@ -732,6 +812,7 @@ defmodule AlaLintTest do
       src_r11 = Enum.filter(src.findings, &(&1.rule == :r11))
 
       enc_dir = Path.join(dir, "enc")
+
       for {rel, content} <- AlaLint.encode(dir, layers: layers) do
         dest = Path.join(enc_dir, rel)
         File.mkdir_p!(Path.dirname(dest))
@@ -764,9 +845,12 @@ defmodule AlaLintTest do
       end
       """)
 
-      layers = [{:feature, [~r/App\.Features\./], peer_ok: false, unit: ~r/(App\.Features\.[^.]+)/}]
+      layers = [
+        {:feature, [~r/App\.Features\./], peer_ok: false, unit: ~r/(App\.Features\.[^.]+)/}
+      ]
 
       enc_dir = Path.join(dir, "enc")
+
       for {rel, content} <- AlaLint.encode(dir, layers: layers) do
         dest = Path.join(enc_dir, rel)
         File.mkdir_p!(Path.dirname(dest))

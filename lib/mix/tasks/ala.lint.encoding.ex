@@ -36,7 +36,9 @@ defmodule Mix.Tasks.Ala.Lint.Encoding do
   end
 
   defp run_lint(argv) do
-    {opts, paths, invalid} = OptionParser.parse(argv, strict: [limit: :integer], aliases: [l: :limit])
+    {opts, paths, invalid} =
+      OptionParser.parse(argv, strict: [limit: :integer], aliases: [l: :limit])
+
     AlaLint.CLI.warn_unknown(invalid)
     path = List.first(paths) || "ala_encoding"
 

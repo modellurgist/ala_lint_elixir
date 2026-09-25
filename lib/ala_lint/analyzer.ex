@@ -31,7 +31,17 @@ defmodule AlaLint.Analyzer do
     @moduledoc false
     # macro_generated: defined inside a `quote` block, so its call sites are in
     # the code the macro injects, not in this source — do not treat as dead.
-    defstruct [:name, :arity, :line, :private, :body, :module, :file, :layer_tag, macro_generated: false]
+    defstruct [
+      :name,
+      :arity,
+      :line,
+      :private,
+      :body,
+      :module,
+      :file,
+      :layer_tag,
+      macro_generated: false
+    ]
   end
 
   @doc """
@@ -186,7 +196,8 @@ defmodule AlaLint.Analyzer do
 
   # `@ala_layer :name` before a def — the per-function layer override. Consumed
   # by the next def (like `@doc`), so it tags one function unless repeated.
-  defp walk({:@, _, [{:ala_layer, _, [tag]}]} = node, st, _k) when st.current != nil and is_atom(tag) do
+  defp walk({:@, _, [{:ala_layer, _, [tag]}]} = node, st, _k)
+       when st.current != nil and is_atom(tag) do
     {node, Map.put(st, :pending_layer, tag)}
   end
 
@@ -281,7 +292,8 @@ defmodule AlaLint.Analyzer do
 
   # literals
   defp walk(lit, st, _k)
-       when st.current != nil and (is_binary(lit) or is_atom(lit) or is_integer(lit) or is_float(lit)) do
+       when st.current != nil and
+              (is_binary(lit) or is_atom(lit) or is_integer(lit) or is_float(lit)) do
     {lit, add_literal(st, lit)}
   end
 
@@ -334,7 +346,10 @@ defmodule AlaLint.Analyzer do
   defp alias_name(_), do: nil
 
   defp fun_name_arity({:when, _, [inner | _]}), do: fun_name_arity(inner)
-  defp fun_name_arity({name, _, args}) when is_atom(name) and is_list(args), do: {name, length(args)}
+
+  defp fun_name_arity({name, _, args}) when is_atom(name) and is_list(args),
+    do: {name, length(args)}
+
   defp fun_name_arity({name, _, nil}) when is_atom(name), do: {name, 0}
   defp fun_name_arity(_), do: {:__unknown__, 0}
 
@@ -360,7 +375,7 @@ defmodule AlaLint.Analyzer do
     do: push_literal(st, {:number, lit})
 
   defp push_literal(st, lit) do
-    update_mod(st, st.current, fn m -> %{m | literals: [{lit, current_line(st)} | m.literals] } end)
+    update_mod(st, st.current, fn m -> %{m | literals: [{lit, current_line(st)} | m.literals]} end)
   end
 
   defp current_line(st), do: Map.get(st, :fun_line, 0)
@@ -396,7 +411,12 @@ defmodule AlaLint.Analyzer do
         count_calls(f.body, names, acc)
       end)
 
-    %{m | local_call_counts: counts, functions: Enum.reverse(m.functions), literals: Enum.reverse(m.literals)}
+    %{
+      m
+      | local_call_counts: counts,
+        functions: Enum.reverse(m.functions),
+        literals: Enum.reverse(m.literals)
+    }
   end
 
   defp count_calls(ast, names, acc) do
@@ -407,10 +427,14 @@ defmodule AlaLint.Analyzer do
         # `nil` args, not a list. Count it so R7 doesn't call `step` dead.
         {:&, _, [{:/, _, [{name, _, nil}, arity]}]} = node, a
         when is_atom(name) and is_integer(arity) ->
-          if MapSet.member?(names, name), do: {node, Map.update(a, name, 1, &(&1 + 1))}, else: {node, a}
+          if MapSet.member?(names, name),
+            do: {node, Map.update(a, name, 1, &(&1 + 1))},
+            else: {node, a}
 
         {name, _, args} = node, a when is_atom(name) and is_list(args) ->
-          if MapSet.member?(names, name), do: {node, Map.update(a, name, 1, &(&1 + 1))}, else: {node, a}
+          if MapSet.member?(names, name),
+            do: {node, Map.update(a, name, 1, &(&1 + 1))},
+            else: {node, a}
 
         node, a ->
           {node, a}
@@ -428,7 +452,11 @@ defmodule AlaLint.Analyzer do
   # directed graph among PROJECT modules only (external refs ignored)
   defp dep_graph(mods, names) do
     for m <- mods, into: %{} do
-      {m.name, m.refs |> Enum.filter(&MapSet.member?(names, &1)) |> Enum.reject(&(&1 == m.name)) |> MapSet.new()}
+      {m.name,
+       m.refs
+       |> Enum.filter(&MapSet.member?(names, &1))
+       |> Enum.reject(&(&1 == m.name))
+       |> MapSet.new()}
     end
   end
 
@@ -438,7 +466,12 @@ defmodule AlaLint.Analyzer do
   # module's alias table). External calls are dropped, like dep_graph.
   defp call_graph(mods) do
     pindex = project_index(mods)
-    base = for m <- mods, fun <- m.functions, into: %{}, do: {{m.name, fun.name, fun.arity}, MapSet.new()}
+
+    base =
+      for m <- mods,
+          fun <- m.functions,
+          into: %{},
+          do: {{m.name, fun.name, fun.arity}, MapSet.new()}
 
     for m <- mods, fun <- m.functions, reduce: base do
       g ->
@@ -449,7 +482,11 @@ defmodule AlaLint.Analyzer do
 
   defp project_index(mods) do
     for m <- mods, into: %{} do
-      names = Enum.reduce(m.functions, %{}, fn f, acc -> Map.update(acc, f.name, [f.arity], &[f.arity | &1]) end)
+      names =
+        Enum.reduce(m.functions, %{}, fn f, acc ->
+          Map.update(acc, f.name, [f.arity], &[f.arity | &1])
+        end)
+
       {m.name, names}
     end
   end
@@ -471,8 +508,10 @@ defmodule AlaLint.Analyzer do
             do: {node, add_callee(acc, pindex, m.name, name, arity)},
             else: {node, acc}
 
-        {{:., _, [{:__aliases__, _, parts}, fun]}, _, cargs} = node, acc when is_atom(fun) and is_list(cargs) ->
-          {node, add_callee(acc, pindex, resolve_mod(alias_name(parts), m, pindex), fun, length(cargs))}
+        {{:., _, [{:__aliases__, _, parts}, fun]}, _, cargs} = node, acc
+        when is_atom(fun) and is_list(cargs) ->
+          {node,
+           add_callee(acc, pindex, resolve_mod(alias_name(parts), m, pindex), fun, length(cargs))}
 
         {name, _, cargs} = node, acc when is_atom(name) and is_list(cargs) ->
           if Map.has_key?(local, name),
@@ -525,8 +564,11 @@ defmodule AlaLint.Analyzer do
 
   defp add_callee(acc, pindex, mod, fun, arity) do
     case get_in(pindex, [mod, fun]) do
-      nil -> acc
-      arities -> MapSet.put(acc, {mod, fun, if(arity in arities, do: arity, else: Enum.min(arities))})
+      nil ->
+        acc
+
+      arities ->
+        MapSet.put(acc, {mod, fun, if(arity in arities, do: arity, else: Enum.min(arities))})
     end
   end
 
@@ -541,8 +583,11 @@ defmodule AlaLint.Analyzer do
     end
   end
 
-  defp alias_pairs([{{:., _, [{:__aliases__, _, base}, :{}]}, _, subs}]) when is_list(base) and is_list(subs) do
-    for {:__aliases__, _, parts} <- subs, is_list(parts), do: {to_string(List.last(parts)), mod_name(base ++ parts)}
+  defp alias_pairs([{{:., _, [{:__aliases__, _, base}, :{}]}, _, subs}])
+       when is_list(base) and is_list(subs) do
+    for {:__aliases__, _, parts} <- subs,
+        is_list(parts),
+        do: {to_string(List.last(parts)), mod_name(base ++ parts)}
   end
 
   defp alias_pairs(_), do: []

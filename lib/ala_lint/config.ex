@@ -55,7 +55,8 @@ defmodule AlaLint.Config do
   a check promoted to scored; `thresholds` = per-check `max:` mapped to a param.
   """
   def normalize_checks(checks) when is_map(checks) do
-    Enum.reduce(checks, %{disabled: [], soft: [], scored: [], thresholds: %{}}, fn {rule, spec}, acc ->
+    Enum.reduce(checks, %{disabled: [], soft: [], scored: [], thresholds: %{}}, fn {rule, spec},
+                                                                                   acc ->
       {level, max} = split_spec(spec)
 
       acc

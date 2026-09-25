@@ -41,7 +41,9 @@ defmodule Mix.Tasks.Ala.Encode do
   end
 
   defp run_encode(argv) do
-    {opts, paths, invalid} = OptionParser.parse(argv, strict: [out: :string, layers_module: :string])
+    {opts, paths, invalid} =
+      OptionParser.parse(argv, strict: [out: :string, layers_module: :string])
+
     AlaLint.CLI.warn_unknown(invalid)
     path = List.first(paths) || "lib"
     out = opts[:out] || "ala_encoding"
@@ -55,6 +57,8 @@ defmodule Mix.Tasks.Ala.Encode do
       File.write!(dest, content)
     end)
 
-    Mix.shell().info("wrote #{length(files)} encoding files to #{out}/ (a draft — complete the tags/edges/$/q by hand)")
+    Mix.shell().info(
+      "wrote #{length(files)} encoding files to #{out}/ (a draft — complete the tags/edges/$/q by hand)"
+    )
   end
 end

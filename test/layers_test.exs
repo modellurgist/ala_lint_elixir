@@ -5,6 +5,7 @@ defmodule LayersTest do
 
   setup_all do
     File.mkdir_p!(Path.join(@dir, "lib"))
+
     File.write!(Path.join(@dir, "lib/mods.ex"), """
     defmodule App.Page do            # top layer (composition) — config lives here
       def go(x), do: App.Features.Wish.run(x)         # drops app→feature ✓
@@ -46,8 +47,10 @@ defmodule LayersTest do
 
   test "R3 flags calibration in the domain layer but not in the composition", %{report: r} do
     r3 = Enum.filter(r.findings, &(&1.rule == :r3))
-    assert Enum.any?(r3, &(&1.message =~ "83"))          # domain magic literal flagged
-    refute Enum.any?(r3, &(&1.message =~ "599"))         # composition literal allowed
+    # domain magic literal flagged
+    assert Enum.any?(r3, &(&1.message =~ "83"))
+    # composition literal allowed
+    refute Enum.any?(r3, &(&1.message =~ "599"))
   end
 
   describe "load/1 resolves a project-level layer spec" do

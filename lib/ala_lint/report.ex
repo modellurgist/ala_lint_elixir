@@ -104,7 +104,12 @@ defmodule AlaLint.Report do
         {_id, _idx}, {a, u} -> {a + 1, u}
       end)
 
-    %{total: total, assigned: assigned, unassigned: Enum.reverse(unassigned), pct: if(total > 0, do: round(assigned / total * 100), else: 100)}
+    %{
+      total: total,
+      assigned: assigned,
+      unassigned: Enum.reverse(unassigned),
+      pct: if(total > 0, do: round(assigned / total * 100), else: 100)
+    }
   end
 
   defp layer_coverage(_), do: nil
@@ -114,18 +119,28 @@ defmodule AlaLint.Report do
   # layer we report the dominant directory and the share of the layer's
   # functions under it (100% = perfectly cohesive; lower = scattered).
   defp layer_dir_cohesion(%{layers: %{fun_index: fi, names: names}, root: root} = model) do
-    file_of = for m <- model.modules, f <- m.functions, into: %{}, do: {{m.name, f.name, f.arity}, f.file}
+    file_of =
+      for m <- model.modules, f <- m.functions, into: %{}, do: {{m.name, f.name, f.arity}, f.file}
 
     fi
     |> Enum.reduce(%{}, fn
-      {_id, nil}, acc -> acc
-      {id, idx}, acc -> Map.update(acc, idx, [dir_of(file_of[id], root)], &[dir_of(file_of[id], root) | &1])
+      {_id, nil}, acc ->
+        acc
+
+      {id, idx}, acc ->
+        Map.update(acc, idx, [dir_of(file_of[id], root)], &[dir_of(file_of[id], root) | &1])
     end)
     |> Enum.sort()
     |> Enum.map(fn {idx, dirs} ->
       freq = Enum.frequencies(dirs)
       {dom, n} = Enum.max_by(freq, fn {_d, c} -> c end)
-      %{layer: Enum.at(names, idx), dominant: dom, share: round(n / length(dirs) * 100), dirs: map_size(freq)}
+
+      %{
+        layer: Enum.at(names, idx),
+        dominant: dom,
+        share: round(n / length(dirs) * 100),
+        dirs: map_size(freq)
+      }
     end)
   end
 
@@ -155,7 +170,9 @@ defmodule AlaLint.Report do
     limit = Keyword.get(opts, :limit, 40)
 
     max_h = Map.get(report.params, :max_height, 5)
-    height_note = if report.height > max_h, do: "  ⚠ exceeds max #{max_h}", else: "  (max #{max_h})"
+
+    height_note =
+      if report.height > max_h, do: "  ⚠ exceeds max #{max_h}", else: "  (max #{max_h})"
 
     header = """
     ── ALA Checklist (R1–R11) ─────────────────────────────────────────────
@@ -187,10 +204,10 @@ defmodule AlaLint.Report do
 
     header <>
       "\nFindings (scored, most severe first):\n" <>
-      (if scored == "", do: "  none 🎉", else: scored) <>
+      if(scored == "", do: "  none 🎉", else: scored) <>
       scored_more <>
       "\n\nAdvisory (reported, NOT scored — R7 reuse/minimality, abstraction height):\n" <>
-      (if advisory == "", do: "  none", else: advisory) <>
+      if(advisory == "", do: "  none", else: advisory) <>
       "\n  promote any of these to a hard failure with --enforce <rule> (e.g. --enforce r7).\n" <>
       params_section(report.params) <>
       "\nR8 (readability: names, config clarity, composition-reads-as-spec) is judgement, not\n" <>
@@ -218,10 +235,12 @@ defmodule AlaLint.Report do
   defp params_section(params) do
     w = params[:weights] || %{}
     weights = w |> Enum.sort() |> Enum.map_join(" ", fn {r, v} -> "#{r}=#{v}" end)
-    enforce = case params[:enforce] do
-      [] -> "(none — advisory checks reported only)"
-      list -> Enum.join(list, ",")
-    end
+
+    enforce =
+      case params[:enforce] do
+        [] -> "(none — advisory checks reported only)"
+        list -> Enum.join(list, ",")
+      end
 
     # Be honest about what a score excluded: a run that disabled or downgraded
     # checks (via .ala_lint.exs or --disable) is not scoring the full checklist.
@@ -268,14 +287,19 @@ defmodule AlaLint.Report do
     "filesystem cohesion (advisory — Spray: dirs separate layers):\n" <> body
   end
 
-  defp coverage_line(nil), do: "layer coverage: (no layer map — run with one to assign functions to layers)"
+  defp coverage_line(nil),
+    do: "layer coverage: (no layer map — run with one to assign functions to layers)"
 
   defp coverage_line(%{assigned: a, total: t, pct: pct, unassigned: un}) do
     tail =
       case un do
-        [] -> ""
+        [] ->
+          ""
+
         _ ->
-          shown = un |> Enum.take(8) |> Enum.map_join(", ", fn {m, n, ar} -> "#{m}.#{n}/#{ar}" end)
+          shown =
+            un |> Enum.take(8) |> Enum.map_join(", ", fn {m, n, ar} -> "#{m}.#{n}/#{ar}" end)
+
           extra = if length(un) > 8, do: " … +#{length(un) - 8} more", else: ""
           "\n  unassigned (worklist): #{shown}#{extra}"
       end
