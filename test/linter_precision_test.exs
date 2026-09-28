@@ -92,7 +92,9 @@ defmodule LinterPrecisionTest do
     assert Enum.any?(findings(r, :r6), &(&1.message =~ "Undo.other/2"))
   end
 
-  test "a route string shared with the Router and a four-letter word are not silent contracts", %{report: r} do
+  test "a route string shared with the Router and a four-letter word are not silent contracts", %{
+    report: r
+  } do
     refute Enum.any?(findings(r, :r5), &(&1.message =~ "/cart/checkout"))
     refute Enum.any?(findings(r, :r5), &(&1.message =~ ~s("step")))
   end

@@ -606,7 +606,11 @@ defmodule AlaLint.Rules do
     max = Map.get(model, :max_public_funs, 12)
 
     for m <- model.modules,
-        publics = m.functions |> Enum.reject(& &1.private) |> Enum.uniq_by(&{&1.name, &1.arity}) |> length(),
+        publics =
+          m.functions
+          |> Enum.reject(& &1.private)
+          |> Enum.uniq_by(&{&1.name, &1.arity})
+          |> length(),
         publics > max do
       f(
         :public_surface,
@@ -1090,7 +1094,9 @@ defmodule AlaLint.Rules do
 
   # A path shared between a page and the Router is the route table's contract, checked by the
   # router at compile time when written as `~p`; not a silent one.
-  defp router_path?({:string, "/" <> _}, mods), do: Enum.any?(mods, &String.ends_with?(&1, ".Router"))
+  defp router_path?({:string, "/" <> _}, mods),
+    do: Enum.any?(mods, &String.ends_with?(&1, ".Router"))
+
   defp router_path?(_lit, _mods), do: false
 
   # ── R6: nameability (heuristic) ──────────────────────────────────────────
@@ -1109,7 +1115,8 @@ defmodule AlaLint.Rules do
 
     wrap_findings =
       for m <- model.modules,
-          publics = m.functions |> Enum.reject(& &1.private) |> Enum.uniq_by(&{&1.name, &1.arity}),
+          publics =
+            m.functions |> Enum.reject(& &1.private) |> Enum.uniq_by(&{&1.name, &1.arity}),
           length(publics) > 1,
           fun <- publics,
           not predicate_name?(fun),
