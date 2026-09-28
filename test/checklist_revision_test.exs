@@ -33,6 +33,10 @@ defmodule ChecklistRevisionTest do
       def total(items), do: Enum.count(items) * 2 + length(items)
       def subscribe_here, do: Phoenix.PubSub.subscribe(App.PubSub, "stock")
     end
+    defmodule App.Domain.Imports do
+      import Enum, only: [map: 2, reduce: 3]
+      def go(xs), do: map(xs, & &1)
+    end
     defmodule App.Page.Helpers do
       def fmt(x), do: x
     end
@@ -150,6 +154,11 @@ defmodule ChecklistRevisionTest do
                &(&1.message =~ "total/1" and &1.message =~ "arithmetic")
              )
     end
+  end
+
+  test "arities in an import's `only:` are not application literals", %{report: r} do
+    refute Enum.any?(findings(r, :r3), &(&1.module == "App.Domain.Imports"))
+    refute Enum.any?(r.findings, &(&1.rule == :r3 and &1.message =~ "literal 3 "))
   end
 
   test "abstractions averaging under 100 lines are reported", %{report: r} do

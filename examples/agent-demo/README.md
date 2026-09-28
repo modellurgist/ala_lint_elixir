@@ -1,7 +1,9 @@
 # Agent demo: code written from the AGENTS guide alone
 
 `vending_machine.ex` in this directory was written by a coding agent whose only design input was
-[`../AGENTS.example.md`](../AGENTS.example.md). The agent was given a fresh context, told to read that
+an earlier version of [`../AGENTS.example.md`](../AGENTS.example.md). The guide has since been revised
+to follow the revised ALA Checklist, so the demo reflects the older guide; the code is kept as it was
+produced. The agent was given a fresh context, told to read that
 one file and nothing else in the repository, and asked for a self-contained Elixir vending machine of
 roughly 80 to 130 lines (coins, product selection, dispense, greedy change, refund, configuration at
 the top). No linter was available to it while writing. The file compiles and runs with
@@ -16,7 +18,7 @@ Three modules mapped straight to the guide's layers:
 
 - `VendingMachine.Change` (domain): pure greedy coin selection over a float map, with no knowledge of
   products or prices. It would serve any coin-based system unchanged.
-- `VendingMachine.Session` (feature): a struct threaded through every call and returned, never hidden.
+- `VendingMachine.Session` (feature): a struct passed through every call and returned, never hidden.
   Each transaction step calls down only to `Change` and returns a tagged tuple as data
   (`{:dispensed, name, coins}`, `{:insufficient_funds, cents}`), never printing or raising.
 - `VendingMachine` (application): holds `@products`, `@initial_stock`, `@initial_float` as the only
@@ -24,17 +26,20 @@ Three modules mapped straight to the guide's layers:
 
 ## How it scored
 
-Run from the linter's directory:
+Re-scored 2026-09-28 with the current linter, using a layer map of `VendingMachine` (application),
+`VendingMachine.Session` (feature), and `VendingMachine.Change` (domain):
 
 ```
-layer-aware   89/B    R1 up=0 peer=0    coverage 100%    height 6
---strict      79/B    + height, + one pass-through
---super-strict 79/B   R11 = 0 (no top-layer logic)
-layer-blind   42/D    misleading, see below
+layer-aware    89/B    R1 up=0 peer=0    coverage 100%    height 3
+--strict       89/B    no advisories
+--super-strict 89/B    R11 = 0 (no top-layer logic)
+layer-blind    42/D    misleading, see below
 ```
 
 A doc-only guide steered a cold agent to 89/B with perfectly clean altitude. That is the useful
-result.
+result. (When first scored, `--strict` gave 79/B, from a height of 6 and one pass-through. Both were
+linter artefacts, since fixed: height no longer counts calls inside one module, and a struct update is
+no longer mistaken for a pass-through.)
 
 ## Honest reading
 
@@ -46,10 +51,12 @@ result.
   `Change`. Whether coin denominations are an application literal to hoist or intrinsic to a change
   abstraction is defensible either way, and the guide explicitly says this is a call only a reader
   makes. The agent kept them local.
-- **The one pass-through flag is a linter false positive that this demo flushed out.** `insert_coin`
-  is `%{session | credit: ..., float: Change.add_coin(...)}`, a struct update that changes two fields,
-  not a bare rename. The pass-through detector does not yet exempt a struct- or map-construction body
-  that merely contains a call. So the code is slightly cleaner than the score shows.
+- **A silent contract the linter misses.** `Session.insert_coin/2` guards with
+  `when coin in [5, 10, 25]`, the same denominations `Change` holds. Two modules agree on the valid
+  coins without either signature showing it (R5), and the literals sit in a feature (R3). The linter
+  doesn't see it because it doesn't collect literals from function heads. Under the revised guide the
+  fix is for `Session` to ask `Change` (a lower layer) whether a coin is valid, or to take the
+  denominations as configuration from the application.
 
 ## Caveats
 

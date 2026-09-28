@@ -228,6 +228,13 @@ defmodule AlaLint.Analyzer do
     {node, st}
   end
 
+  # `import`/`require` options (`only: [assign: 3]`) are arities and names, not
+  # application literals: record the module reference, skip the literals.
+  defp walk({directive, _, args} = node, st, _k)
+       when directive in [:import, :require] and st.current != nil and is_list(args) do
+    {node, record_head_refs(st, args)}
+  end
+
   # `@callback ...` marks the module as defining a behaviour (R9).
   defp walk({:@, _, [{:callback, _, _}]} = node, st, _k) when st.current != nil do
     {node, update_mod(st, st.current, fn m -> %{m | interface: m.interface || :behaviour} end)}
