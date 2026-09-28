@@ -14,6 +14,8 @@ defmodule AlaLint.Rules do
   @weights %{
     r1: 3,
     r1_ref: 3,
+    r9: 3,
+    subscribe: 1,
     r2: 3,
     r5: 3,
     r10: 3,
@@ -34,7 +36,16 @@ defmodule AlaLint.Rules do
   # Advisory rules that a strict mode promotes to scored. `--strict` promotes the
   # obtainable ones; R11, public_surface, and R10-aggregate are aspirational and
   # promoted only by `--super-strict` (see AlaLint.analyze).
-  @advisory_rules [:r7, :r11, :module_size, :height, :passthrough, :public_surface, :r1_ref]
+  @advisory_rules [
+    :r7,
+    :r11,
+    :module_size,
+    :height,
+    :passthrough,
+    :public_surface,
+    :r1_ref,
+    :subscribe
+  ]
   def advisory_rules, do: @advisory_rules
 
   # Default severity per rule. `:warn` findings are reported but excluded from
@@ -48,6 +59,7 @@ defmodule AlaLint.Rules do
     height: :warn,
     passthrough: :warn,
     r1_ref: :warn,
+    subscribe: :warn,
     r11: :warn,
     module_size: :warn,
     public_surface: :warn,
@@ -76,18 +88,92 @@ defmodule AlaLint.Rules do
   def run(model) do
     r1(model) ++
       r1_reference(model) ++
+      subscribe(model) ++
       r2(model) ++
       r3(model) ++
       r4(model) ++
       r5(model) ++
       r6(model) ++
       r7(model) ++
+      r9(model) ++
       r10(model) ++
       r10_aggregate(model) ++
       r11(model) ++
       module_size(model) ++
       height(model) ++ passthrough(model) ++ public_surface(model) ++ layer_validity(model)
   end
+
+  # ── R9: an abstraction owns no interface except its own configuration. A
+  # behaviour or protocol is a port only when it sits in a layer *below* its
+  # implementers (a paradigm port, or a far more general module like GenServer
+  # that higher modules configure). Implemented by a peer in its own layer, it
+  # is a required/provided interface between peers; implemented by a lower
+  # layer, the lower module is written to a higher one's design. Needs a layer
+  # map; exact on explicit `@behaviour` / `defimpl`. ──────────────────────────
+  def r9(%{layers: %{index: idx, peer_ok: peer_ok, units: units, names: names}} = model) do
+    ifaces = for m <- model.modules, m.interface != nil, into: %{}, do: {m.name, m}
+
+    for m <- model.modules,
+        {iface, implementer, line} <- m.implements,
+        definer = ifaces[iface],
+        definer != nil,
+        d = idx[definer.name],
+        i = idx[implementer],
+        d != nil and i != nil,
+        violation = owned_interface(definer.name, implementer, d, i, peer_ok, units) do
+      f(
+        :r9,
+        m.name,
+        model,
+        m,
+        line,
+        "#{short(implementer)} [#{Enum.at(names, i)}] implements #{short(definer.name)} [#{Enum.at(names, d)}], a #{definer.interface} #{violation} — put port interfaces in a lower (paradigm) layer, owned by neither side (R9)"
+      )
+    end
+  end
+
+  def r9(_model), do: []
+
+  defp owned_interface(_definer, _impl, d, i, _peer_ok, _units) when i > d,
+    do: "owned by a more concrete layer"
+
+  defp owned_interface(definer, impl, d, i, peer_ok, units) when i == d do
+    cond do
+      Map.get(peer_ok, d, true) -> nil
+      AlaLint.Layers.unit(definer, units[d]) == AlaLint.Layers.unit(impl, units[d]) -> nil
+      true -> "owned by a peer in the same layer"
+    end
+  end
+
+  defp owned_interface(_definer, _impl, _d, _i, _peer_ok, _units), do: nil
+
+  # ── Self-subscription (R1, advisory). "Receivers never register themselves to
+  # a sender, or to a public event" (Spray §4.4.2). A `subscribe` call with a
+  # topic fixed in the module (a literal or a module attribute) outside the
+  # application layer is a module choosing its own sender. The application
+  # subscribing, or passing the topic down as an argument, is the wiring. ─────
+  def subscribe(model) do
+    for m <- model.modules,
+        {line, kind} <- m.subscriptions,
+        kind in [:literal, :attribute],
+        not app_module?(model, m.name) do
+      f(
+        :subscribe,
+        m.name,
+        model,
+        m,
+        line,
+        "#{short(m.name)} subscribes to a topic it fixes itself (#{kind}) — a receiver choosing its own sender; subscribe in the application (e.g. mount/3), or take the topic as configuration (R1/R5)"
+      )
+    end
+  end
+
+  defp app_module?(%{layers: %{index: idx, app_layers: app}}, name),
+    do: MapSet.member?(app, Map.get(idx, name))
+
+  # Without a layer map there is no application layer to exempt; stay quiet
+  # rather than flag every page's own subscription.
+  defp app_module?(_model, _name), do: true
 
   # ── R10: no shared entity. A domain struct that carries an app-identity's
   # data must not be read by two *peer* features; share only an identity key and
@@ -97,13 +183,13 @@ defmodule AlaLint.Rules do
   def r10(%{layers: %{index: idx, peer_ok: peer_ok, units: units}} = model) do
     for m <- model.modules,
         m.defines_struct,
-        # only an entity in a peer-forbidden (feature) tier: a struct in a
-        # peer_ok layer (a domain/platform abstraction) is *declared shareable*,
-        # so features depending on it is a legal knowledge drop, not R10.
+        # Peer sharing only: two units *of the struct's own* peer-forbidden layer
+        # read it. Units in higher layers reading a lower struct is a knowledge
+        # dependency (at most the aggregate case below), not R10.
         si = idx[m.name],
         si != nil,
         not Map.get(peer_ok, si, true),
-        units_sharing = entity_sharers(m, model, idx, peer_ok, units),
+        units_sharing = entity_sharers(m, model, idx, peer_ok, units, &(&1 == si)),
         MapSet.size(units_sharing) >= 2 do
       who = units_sharing |> Enum.map(&short/1) |> Enum.sort() |> Enum.join(", ")
 
@@ -133,8 +219,7 @@ defmodule AlaLint.Rules do
         m.defines_struct,
         si = idx[m.name],
         si != nil,
-        Map.get(peer_ok, si, true),
-        units_sharing = entity_sharers(m, model, idx, peer_ok, units),
+        units_sharing = entity_sharers(m, model, idx, peer_ok, units, &(&1 < si)),
         MapSet.size(units_sharing) >= 2 do
       who = units_sharing |> Enum.map(&short/1) |> Enum.sort() |> Enum.join(", ")
 
@@ -151,13 +236,15 @@ defmodule AlaLint.Rules do
 
   def r10_aggregate(_model), do: []
 
-  # Distinct feature *units* (a feature and its own submodules count once) that
-  # reference the struct module, including the struct's own feature.
-  defp entity_sharers(struct_mod, model, idx, peer_ok, units) do
+  # Distinct *units* (a feature and its own submodules count once) of
+  # peer-forbidden layers selected by `layer?` that reference the struct module,
+  # including the struct's own unit.
+  defp entity_sharers(struct_mod, model, idx, peer_ok, units, layer?) do
     for m <- model.modules,
         MapSet.member?(m.refs, struct_mod.name) or m.name == struct_mod.name,
         i = idx[m.name],
         i != nil,
+        layer?.(i),
         not Map.get(peer_ok, i, true),
         into: MapSet.new() do
       AlaLint.Layers.unit(m.name, units[i])
@@ -200,28 +287,108 @@ defmodule AlaLint.Rules do
           MapSet.member?(app_id_set, {m.name, name, arity}),
           branchy = Enum.find(clauses, &branchy?(&1.body)),
           branchy != nil do
+        kinds =
+          clauses
+          |> Enum.flat_map(&branch_kinds(&1.body))
+          |> Enum.reject(&(&1 == "route"))
+          |> Enum.uniq()
+          |> Enum.join(", ")
+
         f(
           :r11,
           m.name,
           model,
           m,
           branchy.line,
-          "#{short(m.name)}.#{name}/#{arity} branches in the application layer — the top layer should read as wiring + config; move logic below it (R11)"
+          "#{short(m.name)}.#{name}/#{arity} branches in the application layer (#{kinds}) — a real finding, not cleared by being advisory: move guards into the connection mechanism (with, a runner), rules into configured abstractions or a state machine; keep only routing (R11)"
         )
       end
 
-    size ++ branches
+    computes =
+      for m <- model.modules,
+          {{name, arity}, clauses} <- Enum.group_by(m.functions, &{&1.name, &1.arity}),
+          MapSet.member?(app_id_set, {m.name, name, arity}),
+          computing = Enum.find(clauses, &computes?(&1.body)),
+          computing != nil do
+        f(
+          :r11,
+          m.name,
+          model,
+          m,
+          computing.line,
+          "#{short(m.name)}.#{name}/#{arity} does arithmetic in the application layer — data handling belongs in a feature or domain abstraction; the application assigns its output (R11)"
+        )
+      end
+
+    size ++ branches ++ computes
   end
 
   def r11(_model), do: []
 
-  @branch_forms [:if, :unless, :case, :cond, :with]
-  @doc "Does a function body contain control-flow branching (if/unless/case/cond/with)? Public so the encoder can mark R11 in the notation."
-  def branchy?(body) do
+  # `with` is not counted: it is the Elixir form of Spray's Bind, the connection
+  # mechanism guards should move into (checklist R11). Multi-clause function
+  # heads are routing and never reach here, and a `case` that only routes
+  # ok/error outcomes is wiring too.
+  @doc "Does a function body branch (if/unless/cond, or a case that does more than route outcomes)? Public so the encoder can mark R11 in the notation."
+  def branchy?(body), do: Enum.any?(branch_kinds(body), &(&1 != "route"))
+
+  # A rough classification of a body's branches, for the R11 message:
+  # "guard" tests for nil/ok/error only; "route" is a case whose arms only pass
+  # values on; anything else is "logic". Heuristic, reported for a reader.
+  defp branch_kinds(body) do
+    {_, kinds} =
+      Macro.prewalk(body, [], fn
+        {form, _, [cond_expr | _]} = node, acc when form in [:if, :unless] ->
+          {node, [if(guard_test?(cond_expr), do: "guard", else: "logic") | acc]}
+
+        {:case, _, [_subject, [do: arms]]} = node, acc when is_list(arms) ->
+          {node, [case_kind(arms) | acc]}
+
+        {:cond, _, _} = node, acc ->
+          {node, ["logic" | acc]}
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    Enum.reverse(kinds)
+  end
+
+  defp guard_test?({name, _, ctx}) when is_atom(name) and is_atom(ctx), do: true
+  defp guard_test?({:is_nil, _, [_]}), do: true
+  defp guard_test?({op, _, [_, nil]}) when op in [:==, :!=, :===, :!==], do: true
+  defp guard_test?({:!, _, [inner]}), do: guard_test?(inner)
+  defp guard_test?({:not, _, [inner]}), do: guard_test?(inner)
+  defp guard_test?(_), do: false
+
+  defp case_kind(arms) do
+    patterns = for {:->, _, [[pat], _]} <- arms, do: pat
+    bodies = for {:->, _, [_, body]} <- arms, do: body
+
+    cond do
+      Enum.any?(bodies, &computes?/1) -> "logic"
+      Enum.all?(patterns, &outcome_pattern?/1) -> "route"
+      true -> "logic"
+    end
+  end
+
+  defp outcome_pattern?({tag, _}) when tag in [:ok, :error], do: true
+  defp outcome_pattern?({:{}, _, [tag | _]}) when tag in [:ok, :error], do: true
+  defp outcome_pattern?(atom) when is_atom(atom), do: true
+  defp outcome_pattern?({:_, _, _}), do: true
+  defp outcome_pattern?({name, _, ctx}) when is_atom(name) and is_atom(ctx), do: true
+  defp outcome_pattern?(_), do: false
+
+  @arith [:+, :-, :*, :/, :div, :rem]
+  # Arithmetic on values (not a literal-only constant like `60 * 60`) in a body.
+  defp computes?(body) do
     {_, found} =
       Macro.prewalk(body, false, fn
-        {form, _, _} = node, _ when form in @branch_forms -> {node, true}
-        node, acc -> {node, acc}
+        {op, _, [a, b]} = node, acc when op in @arith ->
+          {node, acc or not (is_number(a) and is_number(b))}
+
+        node, acc ->
+          {node, acc}
       end)
 
     found
@@ -233,15 +400,43 @@ defmodule AlaLint.Rules do
   def module_size(model) do
     max = Map.get(model, :max_module_loc, 500)
 
-    for m <- model.modules, m.loc > max do
-      f(
-        :module_size,
-        m.name,
-        model,
-        m,
-        m.line,
-        "module #{short(m.name)} is #{m.loc} lines (> #{max}) — an abstraction should be readable in isolation; check it is really one concept (R7-adjacent)"
-      )
+    too_big =
+      for m <- model.modules, m.loc > max do
+        f(
+          :module_size,
+          m.name,
+          model,
+          m,
+          m.line,
+          "module #{short(m.name)} is #{m.loc} lines (> #{max}) — an abstraction should be readable in isolation; check it is really one concept (R7-adjacent)"
+        )
+      end
+
+    too_big ++ average_size(model)
+  end
+
+  # Spray's lower bound: "if abstractions average less than 100 lines of code,
+  # we will likely have more abstractions than we need". LOC is attributed per
+  # file (to its first module), so this averages over modules that own lines.
+  # Only meaningful with several of them; an Elixir module is not always an
+  # abstraction, so this stays a prompt.
+  defp average_size(model) do
+    min_avg = Map.get(model, :min_avg_module_loc, 100)
+    sized = for m <- model.modules, m.loc > 0, do: m.loc
+
+    if length(sized) >= 5 and Enum.sum(sized) / length(sized) < min_avg do
+      avg = round(Enum.sum(sized) / length(sized))
+
+      [
+        f(
+          :module_size,
+          "(project)",
+          model,
+          "abstractions average #{avg} lines (< #{min_avg}) across #{length(sized)} files — Spray's lower bound suggests more abstractions than needed; check for helper proliferation (R7)"
+        )
+      ]
+    else
+      []
     end
   end
 
@@ -326,7 +521,7 @@ defmodule AlaLint.Rules do
   @doc """
   The abstraction height — the longest chain in the function call graph, where a
   call **within the application layer costs 0** (the whole app layer is one
-  altitude: its shell → page → view sub-layers are wiring, not added depth).
+  altitude, because the application is one abstraction).
   Every other edge costs 1. Without a layer map, all edges cost 1 (raw chain).
   """
   def height_value(model), do: longest_chain(model.call_graph, edge_cost(model))
@@ -564,10 +759,15 @@ defmodule AlaLint.Rules do
 
   defp altitude_violation(a, b, ia, ib, peer_ok, units) when ia == ib do
     cond do
-      Map.get(peer_ok, ia, true) -> nil
+      Map.get(peer_ok, ia, true) ->
+        nil
+
       # same-unit modules (a feature and its own submodules) are cohesion, not peers
-      AlaLint.Layers.unit(a, units[ia]) == AlaLint.Layers.unit(b, units[ia]) -> nil
-      true -> "cross-peer edge in a peer-forbidden layer (feature ↔ feature coupling) (R1)"
+      AlaLint.Layers.unit(a, units[ia]) == AlaLint.Layers.unit(b, units[ia]) ->
+        nil
+
+      true ->
+        "cross-peer edge between two abstractions in the same layer — the layer above should wire them (R1)"
     end
   end
 
@@ -664,7 +864,7 @@ defmodule AlaLint.Rules do
         model,
         m,
         line,
-        "Process.#{op} — hidden state via the process dictionary; thread state as a value instead (R4)"
+        "Process.#{op} — hidden state via the process dictionary; keep state in the abstraction that owns it (or a State-style abstraction wired in), not hidden (R4)"
       )
     end
   end

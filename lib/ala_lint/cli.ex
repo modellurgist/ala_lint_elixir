@@ -19,30 +19,34 @@ defmodule AlaLint.CLI do
   flags shown.
 
   REQUIRED  (scored by default; a violation fails --min-score)
-    r1    every edge drops (down-only)
+    r1    every edge between abstractions drops (no peer or upward calls)
     r2    no shared mutable state between peers
     r3    application literals live at the composition
-    r4    state is threaded, not hidden
+    r4    state lives with its owner, not hidden
     r5    no silent contracts
     r6    every abstraction names a learnable concept
+    r9    no owned interfaces: @callback/defprotocol implemented by a peer or a lower layer
     r10   no shared entity (feature-tier)
     layer layer-validity (coverage + tags), with a layer map
 
   ADVISORY  (reported by default; scored under --strict; --enforce CHECK to promote one)
     r7             unearned / dead abstraction
     module_size    module over N lines          --set module_size.max=N     (default 500)
+                   average under N lines         --set module_size.min_avg=N (default 100)
     height         hops between abstractions     --set height.max=N          (default 5)
     passthrough    public cross-module rename
     r1_ref         reference-level R1 (templates, aliases)
+    subscribe      a module subscribing itself to a topic it fixes (R1/R5)
 
   ASPIRATIONAL  (reported by default; scored only under --super-strict)
-    r11            no logic at the top           --set app_share.max=F       (default 0.20)
+    r11            no logic at the top: branches (guard/logic; `with` and
+                   ok/error routing exempt) and arithmetic  --set app_share.max=F (default 0.20)
     public_surface wide public API (encapsulation) --set public_surface.max=N (default 12)
     r10_aggregate  shared domain aggregate
 
   NOT MACHINE-SCORED  (a human reads for these)
     r8    reads as the requirements
-    r9    ports paradigm-typed (partial, via r1 + r1_ref)
+    r9    the rest of R9 (outputs announce, no shared DTOs) is judgement
 
   Turn any check off with --disable CHECK, or `checks: %{CHECK: :off}` in the file.
   """

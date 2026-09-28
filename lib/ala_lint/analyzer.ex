@@ -24,7 +24,13 @@ defmodule AlaLint.Analyzer do
               # does this module define a struct? (an entity candidate for R10)
               defines_struct: false,
               # name → count of internal calls to that name (for R7)
-              local_call_counts: %{}
+              local_call_counts: %{},
+              # :behaviour (declares @callback) or :protocol (a defprotocol), for R9
+              interface: nil,
+              # interfaces this module implements: [{written_name, implementer, line}]
+              implements: [],
+              # `*.subscribe(...)` calls: [{line, :literal | :attribute | :dynamic}]
+              subscriptions: []
   end
 
   defmodule Fun do
@@ -65,6 +71,9 @@ defmodule AlaLint.Analyzer do
       files
       |> Enum.flat_map(&modules_in_file/1)
       |> Enum.map(&resolve_local_calls/1)
+
+    pindex = project_index(mods)
+    mods = Enum.map(mods, &resolve_implements(&1, pindex))
 
     names = MapSet.new(mods, & &1.name)
 
@@ -176,6 +185,67 @@ defmodule AlaLint.Analyzer do
     {nil, %{st | current: prev}}
   end
 
+  # `defprotocol Name do ... end` — a module that defines an interface (R9).
+  defp walk({:defprotocol, meta, [{:__aliases__, _, parts} | [[do: body]]]}, st, _k) do
+    local = Enum.map_join(parts, ".", &to_string/1)
+    name = if st.current, do: st.current <> "." <> local, else: local
+    mod = %Mod{name: name, file: st.file, line: meta[:line] || 0, interface: :protocol}
+    prev = st.current
+    st = %{st | current: name, mods: Map.put_new(st.mods, name, mod)}
+    # A protocol's `def`s are declarations, not functions: don't count them.
+    {_, st} = walk(body, Map.put(st, :in_protocol, true), & &1)
+    {nil, %{st | current: prev} |> Map.put(:in_protocol, false)}
+  end
+
+  # `defimpl Proto, for: Target` — the implementer is `Target`, or the enclosing
+  # module when `for:` is omitted. Recorded for R9, then the body is walked as
+  # part of the enclosing module, as before.
+  defp walk({:defimpl, meta, [{:__aliases__, _, parts} | rest]} = node, st, _k)
+       when st.current != nil do
+    target =
+      case rest do
+        [opts | _] when is_list(opts) ->
+          case Keyword.get(opts, :for) do
+            {:__aliases__, _, fparts} -> alias_name(fparts)
+            _ -> nil
+          end
+
+        _ ->
+          nil
+      end
+
+    st =
+      case alias_name(parts) do
+        nil ->
+          st
+
+        proto ->
+          impl = {proto, target || st.current, meta[:line] || 0}
+          update_mod(st, st.current, fn m -> %{m | implements: [impl | m.implements]} end)
+      end
+
+    {_, st} = walk(rest, st, & &1)
+    {node, st}
+  end
+
+  # `@callback ...` marks the module as defining a behaviour (R9).
+  defp walk({:@, _, [{:callback, _, _}]} = node, st, _k) when st.current != nil do
+    {node, update_mod(st, st.current, fn m -> %{m | interface: m.interface || :behaviour} end)}
+  end
+
+  # `@behaviour Mod` — this module implements `Mod`'s callbacks (R9).
+  defp walk({:@, meta, [{:behaviour, _, [{:__aliases__, _, parts}]}]} = node, st, _k)
+       when st.current != nil do
+    case alias_name(parts) do
+      nil ->
+        {node, st}
+
+      name ->
+        impl = {name, st.current, meta[:line] || 0}
+        {node, update_mod(st, st.current, fn m -> %{m | implements: [impl | m.implements]} end)}
+    end
+  end
+
   # `defstruct ...` — mark the module as defining a struct (an R10 entity
   # candidate), and still descend into the field list so default literals are
   # recorded (an R3 config-candidate like `last_output: 0.0` must still count).
@@ -201,6 +271,10 @@ defmodule AlaLint.Analyzer do
     {node, Map.put(st, :pending_layer, tag)}
   end
 
+  defp walk({def_kw, _meta, _args} = node, %{in_protocol: true} = st, _k)
+       when def_kw in [:def, :defp],
+       do: {node, st}
+
   defp walk({def_kw, meta, [head | tail]} = node, st, _k)
        when def_kw in [:def, :defp] and st.current != nil do
     {name, arity} = fun_name_arity(head)
@@ -220,6 +294,10 @@ defmodule AlaLint.Analyzer do
 
     st = update_mod(st, st.current, fn m -> %{m | functions: [fun | m.functions]} end)
     st = Map.put(st, :pending_layer, nil)
+    # A struct matched in the head (`def f(%Peer.Struct{} = x)`) is a reference
+    # too. Only module names are taken from the head; its literals (event names
+    # in `handle_event("save", ...)`) stay out of the literal index.
+    st = record_head_refs(st, head)
     # descend into the body for refs/literals/state ops/calls, tracking the
     # enclosing function's line so literal findings get a useful location.
     prev = Map.get(st, :fun_line, 0)
@@ -276,6 +354,7 @@ defmodule AlaLint.Analyzer do
       end
 
     st = record_state_op(st, parts, fun, dmeta[:line] || 0)
+    st = record_subscription(st, fun, args, dmeta[:line] || 0)
     {_, st} = walk(args, st, & &1)
     {node, st}
   end
@@ -399,8 +478,50 @@ defmodule AlaLint.Analyzer do
     end
   end
 
+  defp record_head_refs(st, head) do
+    {_, refs} =
+      Macro.prewalk(head, [], fn
+        {:__aliases__, _, parts} = node, acc ->
+          case alias_name(parts) do
+            nil -> {node, acc}
+            ref -> {node, [ref | acc]}
+          end
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    update_mod(st, st.current, fn m -> %{m | refs: Enum.into(refs, m.refs)} end)
+  end
+
+  # A subscription names its topic. A literal or module-attribute topic is fixed
+  # in this module; a topic passed in as an argument was chosen by the caller.
+  defp record_subscription(st, :subscribe, args, line) when is_list(args) do
+    kind =
+      cond do
+        Enum.any?(args, &is_binary/1) -> :literal
+        Enum.any?(args, &match?({:@, _, _}, &1)) -> :attribute
+        true -> :dynamic
+      end
+
+    update_mod(st, st.current, fn m -> %{m | subscriptions: [{line, kind} | m.subscriptions]} end)
+  end
+
+  defp record_subscription(st, _fun, _args, _line), do: st
+
   defp match_state?(parts, atom), do: List.last(parts) == atom or parts == [atom]
   _ = @state_mods
+
+  # Resolve the written interface and implementer names through the module's
+  # alias table, like call resolution does.
+  defp resolve_implements(%Mod{} = m, pindex) do
+    impls =
+      for {iface, impl, line} <- m.implements do
+        {resolve_mod(iface, m, pindex) || iface, resolve_mod(impl, m, pindex) || impl, line}
+      end
+
+    %{m | implements: impls}
+  end
 
   # after collecting, count internal calls to each locally-defined function name (R7)
   defp resolve_local_calls(%Mod{} = m) do

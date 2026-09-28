@@ -75,6 +75,10 @@ defmodule AlaLint do
     max_app_share = Keyword.get(opts, :max_app_share) || Map.get(t, :max_app_share) || 0.20
     max_module_loc = Keyword.get(opts, :max_module_loc) || Map.get(t, :max_module_loc) || 500
     max_public_funs = Keyword.get(opts, :max_public_funs) || Map.get(t, :max_public_funs) || 12
+
+    min_avg_module_loc =
+      Keyword.get(opts, :min_avg_module_loc) || Map.get(t, :min_avg_module_loc) || 100
+
     layers_spec = Keyword.get(opts, :layers)
 
     model =
@@ -87,6 +91,7 @@ defmodule AlaLint do
       |> Map.put(:max_app_share, max_app_share)
       |> Map.put(:max_module_loc, max_module_loc)
       |> Map.put(:max_public_funs, max_public_funs)
+      |> Map.put(:min_avg_module_loc, min_avg_module_loc)
       |> put_layers(layers_spec)
       |> Map.put(:params, %{
         root: root,
@@ -95,6 +100,7 @@ defmodule AlaLint do
         max_app_share: max_app_share,
         max_module_loc: max_module_loc,
         max_public_funs: max_public_funs,
+        min_avg_module_loc: min_avg_module_loc,
         enforce: enforce,
         disabled: disabled,
         soft: soft,

@@ -5,19 +5,25 @@ defmodule AlaLint.Layers do
   list, top (concrete/application) to bottom (abstract/platform):
 
       layers: [
-        {:app,      [~r/Web\\..*Page$/, ~r/View$/, "Manifest"], peer_ok: true},
-        {:feature,  [~r/\\.Features\\./],                        peer_ok: false},
-        {:domain,   [~r/\\.Domain\\./, ~r/\\.Cart$/],            peer_ok: true},
-        {:platform, [~r/Effects/, ~r/Foundation/]},           # peer_ok defaults true
+        {:app,       [~r/Web\\..*Live$/, ~r/Web\\..*Page$/, "Manifest"]},   # peer_ok defaults true here
+        {:feature,   [~r/\\.Features\\./], unit: ~r/(.*\\.Features\\.[^.]+)/},
+        {:domain,    [~r/\\.Domain\\./, ~r/Web\\.Components\\./]},
+        {:paradigms, [~r/Interpreter$/, ~r/Effects/, ~r/Foundation/]},
       ]
+
+  Following the ALA Checklist's model of a LiveView app, only page-specific code
+  is application: generic components are domain (UI) abstractions, and a generic
+  shell or effect interpreter is an execution model in the paradigms layer.
 
   A module is assigned to the **first** layer whose patterns match (string =
   substring, or a `Regex`). This unlocks what a tag-blind linter cannot check:
 
-    * **R1 altitude** — every dependency edge must *drop* (callee more abstract
-      than caller). An **upward** edge (callee more concrete) is a hard
-      violation; a **same-layer** edge in a `peer_ok: false` layer (the feature
-      tier, where peer coupling is the classic ALA smell) is a violation too.
+    * **R1 altitude** — every edge between abstractions must *drop* (callee more
+      abstract than caller). An **upward** edge (callee more concrete) is a hard
+      violation, and so is a **same-layer** edge between two different units
+      of a peer-forbidden layer (feature → feature, domain → domain). Every
+      layer below the top forbids peers unless it declares `peer_ok: true`;
+      the top (application) layer allows them, because it is one abstraction.
     * **R3 layer-aware** — application literals are allowed only in the top
       (composition) layer; literals in a lower layer are flagged (hoist if
       application-specific, keep if intrinsic to the abstraction).
@@ -67,7 +73,9 @@ defmodule AlaLint.Layers do
   def resolve(modules, spec) do
     names = Enum.map(spec, fn t -> elem(t, 0) end)
     indexed = Enum.with_index(spec)
-    peer_ok = for {t, i} <- indexed, into: %{}, do: {i, layer_opt(t, :peer_ok, true)}
+    # Peers are forbidden below the application by default (checklist R1); the
+    # application is one abstraction, so its internal calls are allowed.
+    peer_ok = for {t, i} <- indexed, into: %{}, do: {i, layer_opt(t, :peer_ok, i == 0)}
     units = for {t, i} <- indexed, into: %{}, do: {i, layer_opt(t, :unit, nil)}
 
     # Layers where application literals are allowed (R3 exemption). Any layer
@@ -80,10 +88,10 @@ defmodule AlaLint.Layers do
     config_layers =
       if MapSet.size(declared_config) == 0, do: MapSet.new([0]), else: declared_config
 
-    # Application-layer tiers. Calls *within* the app layer don't add abstraction
-    # height — the whole app layer is one altitude — because it is wiring with
-    # legitimate sub-layers (shell → page → view). Mark tiers with `app: true`;
-    # default is the top layer (index 0).
+    # Application-layer tiers. Calls *within* the application don't add height,
+    # because the application is one abstraction. `app: true` marks which layer
+    # that is (default: the top layer). Marking several layers to model
+    # shell → page → view sub-layers is the older model the checklist replaced.
     declared_app = for {t, i} <- indexed, layer_opt(t, :app, false), into: MapSet.new(), do: i
     app_layers = if MapSet.size(declared_app) == 0, do: MapSet.new([0]), else: declared_app
 

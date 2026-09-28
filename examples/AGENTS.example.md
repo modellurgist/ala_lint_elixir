@@ -47,8 +47,10 @@ Each rule is a thing to do, a thing to avoid, and a question to ask yourself.
 
 **R1. Every edge drops.**
 Do: call only downward, toward more general code. Route cross-feature work through the composition.
-Avoid: a feature calling or importing a sibling feature; a lower module referencing an application
-module.
+Avoid: a feature calling or importing a sibling feature; one domain abstraction calling another; a
+lower module referencing an application module; a feature or domain module subscribing itself to a
+topic it hardcodes (the composition subscribes, or passes the topic down). A function the composition
+passes down is fine: that is how a lower module calls up.
 Ask: is the callee more general and more stable than the caller? If not, this edge is wrong.
 
 **R2. No shared mutable state between peers.**
@@ -101,15 +103,22 @@ configured.
 Avoid: burying the product's behavior in scattered helpers so no single place states it.
 Ask: can a new reader state the requirements after reading only the top layer? That is the target.
 
-**R9. Ports carry paradigm-typed data, not domain identities.**
-Do: shape a module's interface by its kind (a transform, a filter, a store, an instruction to the
-shell), not by the product it serves.
-Avoid: a port that names your domain, or a "domain event" with product-specific keys another part must
-understand.
+**R9. Ports are typed by a programming paradigm; a module owns no interface except its own
+configuration.**
+Do: shape a module's ports by their kind (a transform, a filter, a store, an instruction to the
+shell), not by the product it serves. Put behaviours and protocols used as ports in the programming
+paradigms layer. Data on a port is a standard type, a struct from a lower layer, or a struct the
+application defines and passes in.
+Avoid: a `@callback` or protocol defined in a feature or domain module for its peers to implement or
+call (implementing callbacks of a far more general module, like `GenServer`, is fine); a struct one
+peer defines and another pattern-matches on (a data-transfer struct), even if moved to a shared
+module; a "domain event" with product-specific keys another part must understand.
 Ask: could this abstraction wire into a second, unrelated consumer unchanged? If a port mentions your
-domain, it cannot.
-Elixir/Phoenix: return outcomes or effects as paradigm-level instructions (insert into a stream, show a
-flash, start a timer), not cart-specific or user-specific events.
+domain or a sibling's design, it cannot.
+Elixir/Phoenix: outputs should announce ("this happened", "here is my result"), not command a named
+receiver. Whether paradigm-level instructions (insert into a stream, show a flash) count as a
+request on a wired port or as a command is an open question in the checklist; follow the project's
+existing convention, and ask if there isn't one.
 
 **R10. No shared entity.**
 Do: give each feature its own private data. When features relate, share only an identity key.

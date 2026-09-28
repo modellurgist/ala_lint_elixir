@@ -30,6 +30,7 @@ defmodule AlaLint.Config do
   @threshold_keys %{
     "height.max" => :max_height,
     "module_size.max" => :max_module_loc,
+    "module_size.min_avg" => :min_avg_module_loc,
     "public_surface.max" => :max_public_funs,
     "app_share.max" => :max_app_share,
     "min_score" => :min_score

@@ -99,7 +99,13 @@ defmodule Mix.Tasks.Ala.Lint do
 
     threshold_opts =
       sets
-      |> Map.take([:max_height, :max_app_share, :max_module_loc, :max_public_funs])
+      |> Map.take([
+        :max_height,
+        :max_app_share,
+        :max_module_loc,
+        :max_public_funs,
+        :min_avg_module_loc
+      ])
       |> Enum.into([])
 
     analyze_opts =
