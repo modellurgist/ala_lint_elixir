@@ -107,6 +107,8 @@ defmodule AlaLint.Config do
   defp rule_param(:module_size), do: :max_module_loc
   defp rule_param(:public_surface), do: :max_public_funs
   defp rule_param(:r11), do: :max_app_share
+  defp rule_param(:app_share), do: :max_app_share
+  defp rule_param(:module_avg), do: :min_avg_module_loc
   defp rule_param(_), do: nil
 
   defp cast(:max_app_share, v), do: parse_float(v)

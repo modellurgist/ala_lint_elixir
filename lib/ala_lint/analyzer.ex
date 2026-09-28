@@ -55,10 +55,29 @@ defmodule AlaLint.Analyzer do
   files** (those whose first lines contain `GENERATED`) — derived code
   legitimately duplicates its source (e.g. committed codegen kept in sync by a
   `--check`) and must not be scored as hand-authored design. Pass
-  `exclude: [~r/.../]` to skip more paths.
+  `exclude: [~r/.../]` to skip more paths. Phoenix's generated framework files
+  (`core_components.ex`, `layouts.ex`, `telemetry.ex`, `endpoint.ex`, ...) are
+  skipped unless `include_framework: true`.
   """
+  # Phoenix's generated framework files: not the app's design, so not scored unless
+  # `include_framework: true`.
+  @framework_files [
+    ~r{/core_components\.ex$},
+    ~r{/components/layouts\.ex$},
+    ~r{/telemetry\.ex$},
+    ~r{/gettext\.ex$},
+    ~r{/endpoint\.ex$},
+    ~r{/error_(html|json)\.ex$},
+    ~r{/application\.ex$},
+    ~r{/mailer\.ex$},
+    ~r{/repo\.ex$}
+  ]
+
   def build(root, opts \\ []) do
-    exclude = Keyword.get(opts, :exclude, [])
+    exclude =
+      Keyword.get(opts, :exclude, []) ++
+        if(Keyword.get(opts, :include_framework, false), do: [], else: @framework_files)
+
     roots = List.wrap(root)
 
     files =
@@ -86,6 +105,7 @@ defmodule AlaLint.Analyzer do
       literal_index: literal_index(mods),
       dep_graph: dep_graph(mods, names),
       call_graph: call_graph(mods),
+      project_index: pindex,
       template_refs: template_refs(roots, files)
     }
   end
@@ -235,6 +255,11 @@ defmodule AlaLint.Analyzer do
     {node, record_head_refs(st, args)}
   end
 
+  # Doc attributes are prose, not contract or application literals.
+  defp walk({:@, _, [{doc, _, _}]} = node, st, _k)
+       when doc in [:moduledoc, :doc, :typedoc, :shortdoc],
+       do: {node, st}
+
   # `@callback ...` marks the module as defining a behaviour (R9).
   defp walk({:@, _, [{:callback, _, _}]} = node, st, _k) when st.current != nil do
     {node, update_mod(st, st.current, fn m -> %{m | interface: m.interface || :behaviour} end)}
@@ -305,6 +330,7 @@ defmodule AlaLint.Analyzer do
     # too. Only module names are taken from the head; its literals (event names
     # in `handle_event("save", ...)`) stay out of the literal index.
     st = record_head_refs(st, head)
+    st = record_guard_literals(st, head, meta[:line] || 0)
     # descend into the body for refs/literals/state ops/calls, tracking the
     # enclosing function's line so literal findings get a useful location.
     prev = Map.get(st, :fun_line, 0)
@@ -485,6 +511,24 @@ defmodule AlaLint.Analyzer do
     end
   end
 
+  # `when coin in [5, 10, 25]`: the numbers a guard compares against are literals like any
+  # other, and a silent contract when two modules agree on them.
+  defp record_guard_literals(st, {:when, _, [_call | guards]}, line) do
+    {_, nums} =
+      Macro.prewalk(guards, [], fn
+        n, acc when is_integer(n) or is_float(n) -> {n, [n | acc]}
+        node, acc -> {node, acc}
+      end)
+
+    Enum.reduce(nums, st, fn n, acc ->
+      update_mod(acc, acc.current, fn m ->
+        %{m | literals: [{{:number, n}, line} | m.literals]}
+      end)
+    end)
+  end
+
+  defp record_guard_literals(st, _head, _line), do: st
+
   defp record_head_refs(st, head) do
     {_, refs} =
       Macro.prewalk(head, [], fn
@@ -652,6 +696,10 @@ defmodule AlaLint.Analyzer do
 
     set
   end
+
+  @doc "The full project module a written alias resolves to inside `m`, or nil for a dynamic alias."
+  def resolve_written(parts, m, model) when is_list(parts),
+    do: resolve_mod(alias_name(parts), m, Map.get(model, :project_index, %{}))
 
   # Resolve a written module reference to a full project module name, mirroring
   # Elixir scoping: an explicit `alias` wins, then the implicit nested alias

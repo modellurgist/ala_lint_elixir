@@ -21,7 +21,7 @@ defmodule AlaLint.CLI do
   REQUIRED  (scored by default; a violation fails --min-score)
     r1    every edge between abstractions drops (no peer or upward calls)
     r2    no shared mutable state between peers
-    r3    application literals live at the composition
+    r3    application literals live at the composition (numbers, guard numbers, message text)
     r4    state lives with its owner, not hidden
     r5    no silent contracts
     r6    every abstraction names a learnable concept
@@ -32,17 +32,21 @@ defmodule AlaLint.CLI do
   ADVISORY  (reported by default; scored under --strict; --enforce CHECK to promote one)
     r7             unearned / dead abstraction
     module_size    module over N lines          --set module_size.max=N     (default 500)
-                   average under N lines         --set module_size.min_avg=N (default 100)
     height         hops between abstractions     --set height.max=N          (default 5)
     passthrough    public cross-module rename
     r1_ref         reference-level R1 (templates, aliases)
     subscribe      a module subscribing itself to a topic it fixes (R1/R5)
 
   ASPIRATIONAL  (reported by default; scored only under --super-strict)
-    r11            no logic at the top: branches (guard/logic; `with` and
-                   ok/error routing exempt) and arithmetic  --set app_share.max=F (default 0.20)
+    r11            no logic at the top: branches (guard/logic; `with`,
+                   ok/error routing and `connected?` exempt), arithmetic,
+                   handling data between abstractions, working chains
     public_surface wide public API (encapsulation) --set public_surface.max=N (default 12)
-    r10_aggregate  shared domain aggregate
+
+  REPORTED ONLY  (never scored by a tier; --enforce CHECK to score one)
+    app_share      application-layer share of functions --set app_share.max=F (default 0.20)
+    module_avg     files averaging under N lines         --set module_size.min_avg=N (default 100)
+    r10_aggregate  shared domain aggregate (under --strict and above)
 
   NOT MACHINE-SCORED  (a human reads for these)
     r8    reads as the requirements

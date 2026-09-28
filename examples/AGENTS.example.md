@@ -42,10 +42,12 @@ Everything else refines these.
   - **feature:** one user-facing capability, wired by the application;
   - **domain:** reusable, product-free logic and UI components;
   - **programming paradigms:** generic machinery that runs a kind of connection, such as an effect
-    interpreter, a runner, or a port protocol.
+    interpreter, a runner, a binder, or a port protocol;
+  - **foundation (the bottom):** the abstraction over a technical domain such as a database, an HTTP
+    client, or PubSub, reached sideways through a port. A module here may own the name of its topic or
+    table; that is encapsulation, not a module choosing its own sender.
 
-  Databases, HTTP clients and PubSub are technical domains reached sideways through an abstraction of
-  them, not a bottom layer. If you can't name the layer, you don't yet understand the change.
+  If you can't name the layer, you don't yet understand the change.
 - Check the direction of every call you are about to add. It must point down to something more general.
   If it points sideways or up, stop and rewire from above.
 - Put any product-specific constant (a price, a threshold, a label, a route, message text) in the
@@ -57,9 +59,10 @@ Elixir/Phoenix: only page-specific code is application:
 - the router;
 - components that know this page.
 
-Generic function components are domain UI abstractions. A generic shell or effect interpreter goes in
-the programming paradigms layer, below the page: it must not name any page. `Phoenix.LiveView` is itself
-an execution model the page configures.
+Feature modules and feature LiveComponents are the feature layer. Generic function components are
+domain UI abstractions. A generic shell, effect interpreter, binder or runner goes in the programming
+paradigms layer, below the page: it must not name any page. `Phoenix.LiveView` is itself an
+execution model the page configures.
 
 ## The checklist, as coding directives
 
@@ -68,10 +71,14 @@ Each rule is a thing to do, a thing to avoid, and a question to ask yourself.
 **R1. Every edge between abstractions drops to a lower layer.**
 Do: call only downward, toward more general code. Route cross-feature work through the composition.
 Avoid: a feature calling or importing a sibling feature; one domain abstraction calling another; a
-lower module referencing an application module; a feature or domain module subscribing itself to a
-topic it hardcodes (the composition subscribes, or passes the topic down). A function the composition
-passes down is fine: that is how a lower module calls up.
+lower module referencing an application module (including a feature-layer component importing a
+web-layer one); a feature or domain module subscribing itself to a topic it hardcodes (the composition
+subscribes, or passes the topic down). A function the composition passes down is fine: that is how a
+lower module calls up. So is the bottom-layer abstraction over PubSub owning its topic.
 Ask: is the callee more general and more stable than the caller? If not, this edge is wrong.
+Elixir/Phoenix: subscribe from the page. To keep the page free of the `if connected?(socket)` branch,
+put the subscription in an `on_mount` hook in the paradigms layer, configured on the page with the
+topic or the function to call.
 
 **R2. Wires meet only at the top.**
 Do: let the composition hand each abstraction the values it needs. Give each feature its own private
@@ -84,8 +91,10 @@ Immutability gives you most of this for free, so a violation is usually a delibe
 
 **R3. Application literals live at the composition.**
 Do: gather product-specific constants in the composition, or a config module it owns, and pass them
-into the generic code below.
-Avoid: a magic number, label, or message string baked into a domain or feature module.
+into the generic code below. That includes every message a person reads: a flash, a label, an
+empty-state line. A component below the page takes such text as an attribute.
+Avoid: a magic number, label, or message string baked into a domain or feature module, including a
+number in a guard (`when coin in [5, 10, 25]`).
 Ask: would this literal change if the same code served a different product? If yes, it belongs at the
 top. If it is intrinsic to the abstraction (an identity value, a unit conversion), it stays local.
 
@@ -106,26 +115,29 @@ neither signature; a module of names that several features use to agree with eac
 global names).
 Ask: if I renamed this string, would something break with no compiler or test to catch it?
 Elixir/Phoenix: a module of event, stream, and hook names is fine when only the page uses it (its HEEx,
-handlers, and JS hooks). Don't have features read names from it to agree with each other.
+handlers, and JS hooks). Don't have features read names from it to agree with each other. A route
+string written as `~p"/path"` is checked by the router and is not a silent contract.
 
 **R6. Every abstraction names a learnable concept.**
 Do: name a module or function for the one concept it is. Give each abstraction a short `@moduledoc`
 naming the concept, its ports, and its configuration.
-Avoid: a wrapper that only renames a primitive; a module that knows both the meaning of some data and an
-operation on it.
+Avoid: a wrapper that only renames a primitive (`add(a, b), do: a + b`); a module that knows both the
+meaning of some data and an operation on it.
 Ask: "what do you know about?" The answer should be one thing. Can a reader use it without reading its
-body?
+body? (A predicate over the module's own state, `pending?/1`, and a single-function domain module such
+as `GiftWrapCost.call/2` are concepts, not wrappers.)
 
 **R7. Every abstraction earns its existence.**
 Do: keep the least machinery that works. Prefer composing existing general parts over inventing new ones.
 Avoid: a one-in, one-out function that adds a name and a call hop but hides no decision; a layer built
-to hold a layer; modules averaging well under 100 lines, or one over 500.
+to hold a layer; a module over 500 lines, or a codebase whose abstractions average well under 100 lines
+because trivial helpers were split out.
 Ask: if I inlined this, would anything be lost? Single use is fine when the thing names a real concept;
 reuse is a positive, never a smell.
 
 **R8. The composition reads as the requirements.**
 Do: make the top layer legible enough that reading it tells you what the product does and how it is
-configured.
+configured. One map or one list of wires reads better than the same wires spread over many clauses.
 Avoid: burying the product's behavior in scattered helpers so no single place states it.
 Ask: can a new reader state the requirements after reading only the top layer?
 
@@ -142,8 +154,8 @@ module; a "domain event" with product-specific keys another part must understand
 Ask: could this abstraction wire into a second, unrelated consumer unchanged?
 Outputs: an output must never name its destination (a stream, a topic, message text), and should read
 as a result ("this happened") rather than an operation ("do this next"). Any technique that meets this
-is fine: facts the page maps, results on the feature's own ports that the page binds, or a target the
-page passes in as configuration.
+is fine: facts the page maps, results on the feature's own ports that the page binds, an instance that
+announces what it did not handle itself, or a target the page passes in as configuration.
 Ask: could the page send this output somewhere else without editing the feature?
 
 **R10. No two features know the meaning of the same data.**
@@ -152,10 +164,14 @@ data apart: share only an identity key, have the composition pass values in, or 
 shaped for reading.
 Avoid: two features holding, reading, or pattern-matching the same data struct.
 Ask: could one feature change the shape of its data without editing another?
+A struct in a *lower* layer that several features read (a cart aggregate under a cart feature and an
+order feature) may be a legitimate domain abstraction, Spray's ground symbol. Treat a report of it as a
+design to confirm, not a defect to remove.
 
 **R11. The application layer is composition only.**
 Do: keep the top layer to instances, wiring, configuration, and predicates passed in as configuration.
-Avoid: control flow that decides what runs, and assignments that compute data between calls.
+Avoid: control flow that decides what runs; assignments that compute data between calls; fetching a
+value from one abstraction only to hand it to another (Spray's "handling the data").
 Ask: which kind is this `if`?
 - A guard ("only if there's a value", "stop on error") goes into the connection mechanism.
 - A requirement condition becomes a configured abstraction or a predicate passed in.
@@ -168,41 +184,75 @@ Elixir/Phoenix:
 - Guards become `with` or a runner that stops on nothing-to-pass.
 - Arithmetic and compound conditions move into a feature, and the page assigns or displays the result.
 - A `for` over rows in the page template becomes a generic list or table component.
-- `connected?/1` and auth redirects are framework departures to keep small; auth can move to an
-  `on_mount` hook.
+- `connected?/1` and auth redirects are framework departures to keep small; both can move to an
+  `on_mount` hook, after which the page has no branch left.
+- A step-to-URL table and `push_patch` belong to the page (a LiveComponent cannot patch inside
+  `update/2` anyway); a flow feature announces its step and the page moves the URL.
+- The share of all functions that sits in the application is a ratio, not a rule: a page-heavy app
+  scores high on it without being wrong.
 
 ## Techniques to reach for
 
 When a rule is hard to hold, these are standard moves. None is required; the rules are the properties.
 
-- **Results as data, interpreted below the page.** A feature returns descriptions of what happened, and
-  a generic interpreter in the paradigms layer carries them out. It keeps features pure and the page
-  thin (R4, R11). Its outputs must still not name their destination (R9).
+- **Results on ports, bound by the page.** A feature is a function `step(state, payload) ::
+  {state, [{port, payload}]}` that says what happened. The page holds one map from `{feature, port}`
+  to where it lands (a stream, an assign, a flash, another feature's input, a store call, a timer, a
+  URL patch, an async job), and a small binder in the paradigms layer delivers along it. Everything
+  the product does is readable in that map (R8, R9, R11). Add a test that every port a feature declares
+  is bound, because an unbound port is silently dropped.
+- **Feature instances that announce.** In the shape `phx.gen.live` produces, each feature has a
+  LiveComponent that owns its state, stream, buttons and store writes, runs the pure feature's steps,
+  lands the outputs it shows, and announces the rest to the process that mounted it as
+  `{name, port, payload}`. The page routes announcements to the instance they concern with
+  `send_update` and says what happened. Nothing new to learn; the wiring is one `handle_info` clause
+  per wire. Keep the feature's logic in a plain module the instance calls, not in the component.
+- **Instances in a circuit.** The most literal Spray shape: parts implementing one `Step` protocol,
+  wires from `{instance, port}` to `{instance, input}`, sinks for streams, assigns, flashes, stores,
+  timers, and a runner that lands what reaches the circuit's edge. The page is a diagram and touches
+  no value. It costs a vocabulary of sinks and two message hops per click; choose it when several
+  pages reuse the same instances.
+- **The store accepts the feature's change.** Let the persistence abstraction take the same
+  collection change a feature announces (`Store.apply(store, {:removed, item})`), so persisting is
+  one binding or one call, not a `persist/2` on the page.
 - **Private struct per feature.** Each feature owns a struct no other feature reads (R10, R2).
 - **A calibration module at the top.** One place holds the product's constants; the composition reads
   it and passes values down into generic code (R3).
 - **Build, then run.** The composition builds a description of the program (configured stages and how
   they connect), and a generic runner moves the data. The page holds one opaque program value and never
   names the data in between.
-- **A layer map, even informal.** Write down which modules are application, feature, domain, and
-  paradigms. It is the first real act of ALA and makes R1 checkable by eye.
+- **A layer map, even informal.** Write down which modules are application, feature, domain,
+  paradigms, and foundation. It is the first real act of ALA and makes R1 checkable by eye.
 - **Test through ports.** A test never replaces a knowledge dependency. Give the subject a fake instance
   or function on its port. A Mox mock of a paradigm-layer behaviour is a fake port and is fine; a mock of
   a lower-layer module the subject calls by name is not.
+
+## What the linter scores, when it is present
+
+`mix ala.lint` scores the required rules (R1, R2, R3, R4, R5, R6, R9's owned interfaces, R10, layer
+validity); `--strict` adds the obtainable prompts (R7, module size over 500 lines, abstraction height,
+pass-throughs, reference-level R1, self-subscription); `--super-strict` adds the purity targets (R11
+and a public-surface cap, counted per function, not per clause). Three checks are reported at every
+level and scored by none, because they are ratios or design choices: the application's share of
+functions, files averaging under 100 lines, and a shared lower-layer aggregate. Phoenix's generated
+framework files are skipped. A `connected?/1` guard, `with`, and a `case` that only routes ok/error
+outcomes are not R11 findings. R8 and the rest of R9 are never scored: read for them.
 
 ## Self-review before you finish (do this when the linter is absent)
 
 Read your diff and answer honestly:
 
 1. Does every new call point downward to something more general? (R1)
-2. Is any product constant or message text sitting below the top layer? (R3)
+2. Is any product constant or message text sitting below the top layer, including in a guard or a
+   component's markup? (R3)
 3. Is any state hidden in a process, global, or shared mutable, or managed by something that doesn't
    own it? (R2, R4)
 4. Is there a magic string or shape two modules agree on silently? (R5)
 5. Does any new module just wrap or rename something, earning no concept? (R6, R7)
 6. Does any output name its destination, or any `@callback` or struct get defined for a peer? (R9)
 7. Do two features now share a data struct? (R10)
-8. Did the top layer gain a decision or a computation rather than wiring? (R11)
+8. Did the top layer gain a decision, a computation, or a value fetched from one abstraction and handed
+   to another? (R11)
 9. Does any test replace a module the subject depends on for its meaning? (tests)
 10. Read the top layer alone: does it state what the product does? (R8)
 

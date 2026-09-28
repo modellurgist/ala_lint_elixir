@@ -307,13 +307,13 @@ defmodule AlaLint.EncodingLinter do
 
       [
         %Finding{
-          rule: :r11,
+          rule: :app_share,
           message:
-            "the application layer is #{pct}% of functions (> #{round(@max_app_share * 100)}%) — the top should be mostly wiring + config, not logic (R11 aggregate, approximate: assumes level 0 is the app tier)",
+            "the application layer is #{pct}% of functions (> #{round(@max_app_share * 100)}%) — the top should be mostly wiring + config, not logic (R11-adjacent, approximate: assumes level 0 is the app tier)",
           module: "(project)",
           file: nil,
           line: 0,
-          weight: weight(:r11)
+          weight: weight(:app_share)
         }
       ]
     else

@@ -181,7 +181,7 @@ defmodule EncodingLinterTest do
     File.rm_rf!(dir)
   end
 
-  test "flags the R11 app-share aggregate from level-0 function share" do
+  test "flags the app-share aggregate from level-0 function share" do
     dir = Path.join(System.tmp_dir!(), "ala_share_#{System.unique_integer([:positive])}")
     File.mkdir_p!(dir)
 
@@ -197,7 +197,7 @@ defmodule EncodingLinterTest do
 
     assert Enum.any?(
              r.findings,
-             &(&1.rule == :r11 and &1.module == "(project)" and
+             &(&1.rule == :app_share and &1.module == "(project)" and
                  &1.message =~ "application layer is 67%")
            )
 

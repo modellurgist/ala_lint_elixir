@@ -31,6 +31,18 @@ defmodule ChecklistRevisionTest do
         with {:ok, v} <- App.Features.Wish.check(x), do: App.Features.Cart.take(v)
       end
       def total(items), do: Enum.count(items) * 2 + length(items)
+      def dance(x) do
+        {r, _} = App.Features.Wish.check(x)
+        App.Features.Cart.take(r)
+      end
+      def held(x) do
+        r = App.Features.Wish.run(x)
+        assign(x, :r, r)
+      end
+      def chain(x), do: worker(x)
+      def worker(x), do: x * 3
+      def assign(s, _k, _v), do: s
+      def forward(x), do: Enum.map(x, &App.Features.Wish.run/1)
       def subscribe_here, do: Phoenix.PubSub.subscribe(App.PubSub, "stock")
     end
     defmodule App.Domain.Imports do
@@ -41,7 +53,9 @@ defmodule ChecklistRevisionTest do
       def fmt(x), do: x
     end
     defmodule App.Features.Wish do
+      @moduledoc "Some Prose That Reads Like A Sentence Here"
       @behaviour App.Features.Cart
+      def message, do: "Saved to your wishlist"
       def run(x), do: x
       def check(x), do: {:ok, x}
       def subscribe_self, do: Phoenix.PubSub.subscribe(App.PubSub, "wishes")
@@ -59,6 +73,7 @@ defmodule ChecklistRevisionTest do
       def new(x), do: %__MODULE__{amount: App.Domain.Round.up(x)}
     end
     defmodule App.Domain.Round do
+      def up(x) when x > 42, do: x
       def up(x), do: x
     end
     defmodule App.Paradigms.Step do
@@ -74,13 +89,14 @@ defmodule ChecklistRevisionTest do
     end
     """)
 
-    # A few small single-module files, so the average-size check has files to average.
-    for n <- 1..5 do
-      File.write!(Path.join(@dir, "lib/small_#{n}.ex"), """
-      defmodule App.Domain.Small#{n} do
-        def id(x), do: x
-      end
-      """)
+    # Enough small files (over 1000 lines in all, averaging under 100) for the size advisory.
+    for n <- 1..14 do
+      body = Enum.map_join(1..80, "\n", &"  def f#{&1}(x), do: x")
+
+      File.write!(
+        Path.join(@dir, "lib/small_#{n}.ex"),
+        "defmodule App.Domain.Small#{n} do\n#{body}\nend\n"
+      )
     end
 
     {:ok,
@@ -148,6 +164,10 @@ defmodule ChecklistRevisionTest do
       refute Enum.any?(findings(r, :r11), &(&1.message =~ "routed/1"))
     end
 
+    test "a `&Mod.fun/arity` capture is not arithmetic", %{report: r} do
+      refute Enum.any?(findings(r, :r11), &(&1.message =~ "forward/1"))
+    end
+
     test "arithmetic in the application is reported", %{report: r} do
       assert Enum.any?(
                findings(r, :r11),
@@ -161,7 +181,38 @@ defmodule ChecklistRevisionTest do
     refute Enum.any?(r.findings, &(&1.rule == :r3 and &1.message =~ "literal 3 "))
   end
 
+  describe "R11 handling data and working chains" do
+    test "binding a feature's result and passing it to another feature is reported", %{report: r} do
+      assert Enum.any?(
+               findings(r, :r11),
+               &(&1.message =~ "dance/1" and &1.message =~ "binds `r`")
+             )
+    end
+
+    test "binding a result and only storing it is not", %{report: r} do
+      refute Enum.any?(findings(r, :r11), &(&1.message =~ "held/1"))
+    end
+
+    test "an app function calling an app function that computes is a working chain", %{report: r} do
+      assert Enum.any?(findings(r, :r11), &(&1.message =~ "chain/1" and &1.message =~ "worker/1"))
+    end
+  end
+
+  describe "R3 additions" do
+    test "a number in a guard is a literal", %{report: r} do
+      assert Enum.any?(
+               findings(r, :r3),
+               &(&1.module == "App.Domain.Round" and &1.message =~ "42")
+             )
+    end
+
+    test "message text in a feature is reported; a moduledoc is not", %{report: r} do
+      assert Enum.any?(findings(r, :r3), &(&1.message =~ "Saved to your wishlist"))
+      refute Enum.any?(findings(r, :r3), &(&1.message =~ "Some Prose"))
+    end
+  end
+
   test "abstractions averaging under 100 lines are reported", %{report: r} do
-    assert Enum.any?(findings(r, :module_size), &(&1.message =~ "average"))
+    assert Enum.any?(findings(r, :module_avg), &(&1.message =~ "average"))
   end
 end

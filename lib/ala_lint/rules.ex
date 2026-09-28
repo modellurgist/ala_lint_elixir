@@ -26,6 +26,8 @@ defmodule AlaLint.Rules do
     r7: 1,
     r11: 1,
     module_size: 1,
+    module_avg: 1,
+    app_share: 1,
     height: 1,
     passthrough: 1,
     public_surface: 1,
@@ -34,8 +36,11 @@ defmodule AlaLint.Rules do
   def weights, do: @weights
 
   # Advisory rules that a strict mode promotes to scored. `--strict` promotes the
-  # obtainable ones; R11, public_surface, and R10-aggregate are aspirational and
-  # promoted only by `--super-strict` (see AlaLint.analyze).
+  # obtainable ones; R11 and public_surface are aspirational and promoted only by
+  # `--super-strict` (see AlaLint.analyze). Not listed, so never promoted by a
+  # tier (only by `--enforce`): app_share and module_avg (ratios that penalise an
+  # app for having many pages or small single-function abstractions) and
+  # r10_aggregate (a shared domain aggregate is a design, not a defect).
   @advisory_rules [
     :r7,
     :r11,
@@ -62,6 +67,8 @@ defmodule AlaLint.Rules do
     subscribe: :warn,
     r11: :warn,
     module_size: :warn,
+    module_avg: :warn,
+    app_share: :warn,
     public_surface: :warn,
     r10_aggregate: :warn
   }
@@ -91,6 +98,7 @@ defmodule AlaLint.Rules do
       subscribe(model) ++
       r2(model) ++
       r3(model) ++
+      r3_text(model) ++
       r4(model) ++
       r5(model) ++
       r6(model) ++
@@ -156,7 +164,8 @@ defmodule AlaLint.Rules do
     for m <- model.modules,
         {line, kind} <- m.subscriptions,
         kind in [:literal, :attribute],
-        not app_module?(model, m.name) do
+        not app_module?(model, m.name),
+        not bottom_module?(model, m.name) do
       f(
         :subscribe,
         m.name,
@@ -174,6 +183,13 @@ defmodule AlaLint.Rules do
   # Without a layer map there is no application layer to exempt; stay quiet
   # rather than flag every page's own subscription.
   defp app_module?(_model, _name), do: true
+
+  # The lowest declared layer is where a technical domain (PubSub, a repo) is abstracted;
+  # such a module owning its topic name is encapsulation, not self-registration.
+  defp bottom_module?(%{layers: %{index: idx, names: names}}, name),
+    do: Map.get(idx, name) == length(names) - 1
+
+  defp bottom_module?(_model, _name), do: false
 
   # ── R10: no shared entity. A domain struct that carries an app-identity's
   # data must not be read by two *peer* features; share only an identity key and
@@ -265,10 +281,10 @@ defmodule AlaLint.Rules do
       if share > max_share do
         [
           f(
-            :r11,
+            :app_share,
             "(project)",
             model,
-            "the application layer is #{round(share * 100)}% of functions (> #{round(max_share * 100)}%) — the top layer should be mostly wiring + config, not logic (R11)"
+            "the application layer is #{round(share * 100)}% of functions (> #{round(max_share * 100)}%) — the top layer should be mostly wiring + config, not logic (R11-adjacent; a ratio, never scored by a tier)"
           )
         ]
       else
@@ -320,10 +336,139 @@ defmodule AlaLint.Rules do
         )
       end
 
-    size ++ branches ++ computes
+    size ++
+      branches ++ computes ++ handles_data(model, app_id_set) ++ working_chains(model, app_id_set)
   end
 
   def r11(_model), do: []
+
+  # Spray §1.6.3: the application "handles the data" when it catches one abstraction's result only
+  # to pass it to another. Detected as: a variable bound from a call into a lower-layer module, then
+  # passed as an argument to another call into a lower-layer module, inside one app-layer function.
+  # A result bound and merely stored (assign, a struct update) is holding, not handling.
+  defp handles_data(model, app_id_set) do
+    %{index: idx} = model.layers
+
+    for m <- model.modules,
+        fun <- m.functions,
+        MapSet.member?(app_id_set, {m.name, fun.name, fun.arity}),
+        lower = fn mod -> (i = idx[mod]) != nil and i > idx[m.name] end,
+        {var, from} <- bound_from_lower(fun.body, m, model, lower),
+        # building an instance and then using it with its own module is configuration, not handling
+        to = passed_to_lower(fun.body, var, m, model, &(lower.(&1) and &1 != from)),
+        to != nil do
+      f(
+        :r11,
+        m.name,
+        model,
+        m,
+        fun.line,
+        "#{short(m.name)}.#{fun.name}/#{fun.arity} binds `#{var}` from #{short(from)} and passes it to #{short(to)} — the application is handling data between abstractions; let a runner or a wire carry it (R11, §1.6.3)"
+      )
+    end
+  end
+
+  # [{var_name, module}] for every `var = Lower.call(...)` or `{a, b} = Lower.call(...)` in body.
+  defp bound_from_lower(body, m, model, lower) do
+    {_, found} =
+      Macro.prewalk(body, [], fn
+        {:=, _, [pat, rhs]} = node, acc ->
+          case remote_target(rhs, m, model) do
+            nil ->
+              {node, acc}
+
+            mod ->
+              if lower.(mod),
+                do: {node, acc ++ for(v <- pattern_vars(pat), do: {v, mod})},
+                else: {node, acc}
+          end
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    found
+  end
+
+  # The first lower-layer call that takes `var` as a direct argument (or inside a list/tuple arg).
+  defp passed_to_lower(body, var, m, model, lower) do
+    {_, found} =
+      Macro.prewalk(body, nil, fn
+        node, nil ->
+          case remote_target(node, m, model) do
+            nil ->
+              {node, nil}
+
+            mod ->
+              {_, _, args} = node
+
+              if lower.(mod) and Enum.any?(args, &mentions_var?(&1, var)),
+                do: {node, mod},
+                else: {node, nil}
+          end
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    found
+  end
+
+  defp remote_target({{:., _, [{:__aliases__, _, parts}, _fun]}, _, args}, m, model)
+       when is_list(args),
+       do: AlaLint.Analyzer.resolve_written(parts, m, model)
+
+  defp remote_target(_, _m, _model), do: nil
+
+  defp pattern_vars(pat) do
+    {_, vars} =
+      Macro.prewalk(pat, [], fn
+        {name, _, ctx} = node, acc
+        when is_atom(name) and is_atom(ctx) and name not in [:_, :%{}, :{}] ->
+          if String.starts_with?(to_string(name), "_"),
+            do: {node, acc},
+            else: {node, [name | acc]}
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    vars
+  end
+
+  # A bare variable, or a variable inside a tuple/list argument (not inside a nested call).
+  defp mentions_var?({name, _, ctx}, var) when is_atom(ctx), do: name == var
+  defp mentions_var?({:{}, _, els}, var), do: Enum.any?(els, &mentions_var?(&1, var))
+  defp mentions_var?({a, b}, var), do: mentions_var?(a, var) or mentions_var?(b, var)
+  defp mentions_var?(list, var) when is_list(list), do: Enum.any?(list, &mentions_var?(&1, var))
+  defp mentions_var?(_, _), do: false
+
+  # Checklist R1, "working chains in the application": an app-layer function that does work (it
+  # branches beyond routing, or computes) and is called by another app-layer function. Each link is
+  # either an abstraction that belongs lower, or wiring that belongs in the composition.
+  defp working_chains(model, app_id_set) do
+    by_id = fun_lookup(model)
+
+    for {caller, callees} <- model.call_graph,
+        MapSet.member?(app_id_set, caller),
+        callee <- callees,
+        callee != caller,
+        MapSet.member?(app_id_set, callee),
+        {m, fun} = Map.get(by_id, callee, {nil, nil}),
+        fun != nil,
+        branchy?(fun.body) or computes?(fun.body) do
+      {cmod, cname, car} = caller
+
+      f(
+        :r11,
+        cmod,
+        model,
+        m,
+        fun.line,
+        "#{short(cmod)}.#{cname}/#{car} → #{short(m.name)}.#{fun.name}/#{fun.arity}: a chain of product-specific functions doing work in the application; make the callee an abstraction in a lower layer, or plain wiring (R1 working chain, R11)"
+      )
+    end
+  end
 
   # `with` is not counted: it is the Elixir form of Spray's Bind, the connection
   # mechanism guards should move into (checklist R11). Multi-clause function
@@ -339,7 +484,7 @@ defmodule AlaLint.Rules do
     {_, kinds} =
       Macro.prewalk(body, [], fn
         {form, _, [cond_expr | _]} = node, acc when form in [:if, :unless] ->
-          {node, [if(guard_test?(cond_expr), do: "guard", else: "logic") | acc]}
+          {node, [branch_kind(cond_expr) | acc]}
 
         {:case, _, [_subject, [do: arms]]} = node, acc when is_list(arms) ->
           {node, [case_kind(arms) | acc]}
@@ -353,6 +498,11 @@ defmodule AlaLint.Rules do
 
     Enum.reverse(kinds)
   end
+
+  # `if connected?(socket)` is the framework departure the checklist names (the
+  # LiveView table); it counts as routing, like `with`, not as logic at the top.
+  defp branch_kind({:connected?, _, [_]}), do: "route"
+  defp branch_kind(cond_expr), do: if(guard_test?(cond_expr), do: "guard", else: "logic")
 
   defp guard_test?({name, _, ctx}) when is_atom(name) and is_atom(ctx), do: true
   defp guard_test?({:is_nil, _, [_]}), do: true
@@ -380,10 +530,14 @@ defmodule AlaLint.Rules do
   defp outcome_pattern?(_), do: false
 
   @arith [:+, :-, :*, :/, :div, :rem]
-  # Arithmetic on values (not a literal-only constant like `60 * 60`) in a body.
+  # Arithmetic on values (not a literal-only constant like `60 * 60`) in a body. A
+  # `&Mod.fun/arity` capture is not a division, so captures are not walked.
   defp computes?(body) do
     {_, found} =
       Macro.prewalk(body, false, fn
+        {:&, meta, _}, acc ->
+          {{:&, meta, []}, acc}
+
         {op, _, [a, b]} = node, acc when op in @arith ->
           {node, acc or not (is_number(a) and is_number(b))}
 
@@ -424,12 +578,14 @@ defmodule AlaLint.Rules do
     min_avg = Map.get(model, :min_avg_module_loc, 100)
     sized = for m <- model.modules, m.loc > 0, do: m.loc
 
-    if length(sized) >= 5 and Enum.sum(sized) / length(sized) < min_avg do
+    # Only meaningful once there is enough code for an average to say anything.
+    if length(sized) >= 5 and Enum.sum(sized) >= 1000 and
+         Enum.sum(sized) / length(sized) < min_avg do
       avg = round(Enum.sum(sized) / length(sized))
 
       [
         f(
-          :module_size,
+          :module_avg,
           "(project)",
           model,
           "abstractions average #{avg} lines (< #{min_avg}) across #{length(sized)} files — Spray's lower bound suggests more abstractions than needed; check for helper proliferation (R7)"
@@ -450,7 +606,7 @@ defmodule AlaLint.Rules do
     max = Map.get(model, :max_public_funs, 12)
 
     for m <- model.modules,
-        publics = Enum.count(m.functions, &(not &1.private)),
+        publics = m.functions |> Enum.reject(& &1.private) |> Enum.uniq_by(&{&1.name, &1.arity}) |> length(),
         publics > max do
       f(
         :public_surface,
@@ -815,6 +971,35 @@ defmodule AlaLint.Rules do
     end
   end
 
+  # ── R3: message text below the composition. A string with several words and a
+  # capital start, in a feature or domain module, is almost always something a
+  # person will read: a flash, a label, an error message. That is an application
+  # literal (R3), and an output carrying it names its own presentation (R9). ────
+  def r3_text(%{layers: %{index: idx}} = model) do
+    for m <- model.modules,
+        # only in a declared lower layer: unassigned modules are the coverage worklist, not findings
+        idx[m.name] != nil,
+        r3_scannable?(model, m.name),
+        {{:string, text}, line} <- m.literals,
+        prose?(text) do
+      f(
+        :r3,
+        m.name,
+        model,
+        m,
+        line,
+        "message text #{inspect(text)} in #{short(m.name)} below the composition — text a person reads is an application literal; the page should supply it (R3, R9)"
+      )
+    end
+  end
+
+  def r3_text(_model), do: []
+
+  defp prose?(text) do
+    String.match?(text, ~r/^[A-Z][a-z].*\s.+/) and length(String.split(text)) >= 3 and
+      not String.contains?(text, ["<", "=", "/"])
+  end
+
   # ── R3: application literals baked into a lower abstraction (heuristic) ───
   # Flags "policy-ish" literals: floats, integers ≥ 10 (excluding round
   # placeholders), and any string/atom literal that also looks like config.
@@ -873,7 +1058,8 @@ defmodule AlaLint.Rules do
   def r5(model) do
     for {lit, mods} <- model.literal_index,
         contractish?(lit),
-        MapSet.size(mods) >= 2 do
+        MapSet.size(mods) >= 2,
+        not router_path?(lit, mods) do
       owner = mods |> Enum.sort() |> hd()
       m = Enum.find(model.modules, &(&1.name == owner))
 
@@ -896,11 +1082,16 @@ defmodule AlaLint.Rules do
   # the mass of markup/label strings a Phoenix app repeats across components.
   # Atoms are excluded (pervasive keyword/field noise); numbers → R3.
   defp contractish?({:string, s}) do
-    String.length(s) in 3..40 and not String.match?(s, ~r/\s/) and String.match?(s, ~r/[a-zA-Z]/)
+    String.length(s) in 5..40 and not String.match?(s, ~r/\s/) and String.match?(s, ~r/[a-zA-Z]/)
   end
 
   defp contractish?({:atom, _}), do: false
   defp contractish?({:number, _}), do: false
+
+  # A path shared between a page and the Router is the route table's contract, checked by the
+  # router at compile time when written as `~p`; not a silent one.
+  defp router_path?({:string, "/" <> _}, mods), do: Enum.any?(mods, &String.ends_with?(&1, ".Router"))
+  defp router_path?(_lit, _mods), do: false
 
   # ── R6: nameability (heuristic) ──────────────────────────────────────────
   def r6(model) do
@@ -917,7 +1108,12 @@ defmodule AlaLint.Rules do
       end
 
     wrap_findings =
-      for m <- model.modules, fun <- m.functions, not fun.private, primitive_wrapper?(fun) do
+      for m <- model.modules,
+          publics = m.functions |> Enum.reject(& &1.private) |> Enum.uniq_by(&{&1.name, &1.arity}),
+          length(publics) > 1,
+          fun <- publics,
+          not predicate_name?(fun),
+          primitive_wrapper?(fun) do
         f(
           :r6,
           m.name,
@@ -948,6 +1144,9 @@ defmodule AlaLint.Rules do
        do: terminal_operand?(a) and terminal_operand?(b)
 
   defp primitive_wrapper?(_), do: false
+
+  # `pending?/1` over a private field is encapsulation, not a rename of `!=`.
+  defp predicate_name?(%{name: name}), do: String.ends_with?(Atom.to_string(name), "?")
 
   # A bare variable (`{:x, _, ctx}` with atom context/nil) or a literal.
   defp terminal_operand?({name, _, ctx}) when is_atom(name) and (is_atom(ctx) or is_nil(ctx)),

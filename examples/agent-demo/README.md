@@ -26,20 +26,22 @@ Three modules mapped straight to the guide's layers:
 
 ## How it scored
 
-Re-scored 2026-09-28 with the current linter, using a layer map of `VendingMachine` (application),
+Re-scored 2026-09-29 with the current linter, using a layer map of `VendingMachine` (application),
 `VendingMachine.Session` (feature), and `VendingMachine.Change` (domain):
 
 ```
-layer-aware    89/B    R1 up=0 peer=0    coverage 100%    height 3
---strict       89/B    no advisories
---super-strict 89/B    R11 = 0 (no top-layer logic)
+layer-aware    79/B    R1 up=0 peer=0    coverage 100%    R3 = 4
+--strict       79/B    no advisories
+--super-strict 79/B    R11 = 0 (no top-layer logic)
 layer-blind    42/D    misleading, see below
 ```
 
-A doc-only guide steered a cold agent to 89/B with perfectly clean altitude. That is the useful
-result. (When first scored, `--strict` gave 79/B, from a height of 6 and one pass-through. Both were
-linter artefacts, since fixed: height no longer counts calls inside one module, and a struct update is
-no longer mistaken for a pass-through.)
+A doc-only guide steered a cold agent to clean altitude and a branch-free top layer. That is the
+useful result. The score itself has moved with the linter: it was 89/B when R3 counted only the two
+denominations in `Change`; since the revised checklist it also counts the numbers in `Session`'s
+guard (`when coin in [5, 10, 25]`), the very contract the earlier reading of this page said the
+linter could not see. (When first scored, `--strict` gave 79/B for a different reason, a height of 6
+and one pass-through, both linter artefacts since fixed.)
 
 ## Honest reading
 
@@ -47,16 +49,17 @@ no longer mistaken for a pass-through.)
   so it flags all eleven configuration literals as misplaced. Declaring layers (which the guide tells
   you to do) turns the same code into 89/B. This is the guide's own point: the layer map is the first
   real act of ALA.
-- **The remaining R3:2 is a judgment call, not a miss.** It flags `@denominations [25, 10, 5]` in
+- **Half of the R3:4 is a judgment call, not a miss.** It flags `@denominations [25, 10, 5]` in
   `Change`. Whether coin denominations are an application literal to hoist or intrinsic to a change
   abstraction is defensible either way, and the guide explicitly says this is a call only a reader
   makes. The agent kept them local.
-- **A silent contract the linter misses.** `Session.insert_coin/2` guards with
+- **The other half is a silent contract the linter half-sees.** `Session.insert_coin/2` guards with
   `when coin in [5, 10, 25]`, the same denominations `Change` holds. Two modules agree on the valid
   coins without either signature showing it (R5), and the literals sit in a feature (R3). The linter
-  doesn't see it because it doesn't collect literals from function heads. Under the revised guide the
-  fix is for `Session` to ask `Change` (a lower layer) whether a coin is valid, or to take the
-  denominations as configuration from the application.
+  now reports the guard's numbers as R3 (it collects literals from function heads since the revised
+  checklist) but still cannot see the R5 agreement, because numbers are not treated as contracts.
+  Under the current guide the fix is for `Session` to ask `Change` (a lower layer) whether a coin is
+  valid, or to take the denominations as configuration from the application.
 
 ## Caveats
 

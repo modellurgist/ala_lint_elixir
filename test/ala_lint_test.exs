@@ -523,10 +523,10 @@ defmodule AlaLintTest do
       refute Enum.any?(r.scored_findings, &(&1.rule == :r11))
     end
 
-    test "R11 flags an oversized application layer share", %{report: r} do
+    test "the application-layer share is reported as its own never-scored check", %{report: r} do
       assert Enum.any?(
                r.advisory_findings,
-               &(&1.rule == :r11 and &1.message =~ "application layer is")
+               &(&1.rule == :app_share and &1.message =~ "application layer is")
              )
     end
 
@@ -598,7 +598,8 @@ defmodule AlaLintTest do
     strict = AlaLint.analyze(dir, layers: layers, strict: true)
     sup = AlaLint.analyze(dir, layers: layers, super_strict: true)
 
-    # the shared domain aggregate is invisible normally, advisory under strict, scored under super-strict
+    # the shared domain aggregate is invisible normally and advisory under strict and super-strict:
+    # a shared domain abstraction is a design to read, not a defect to score
     refute Enum.any?(normal.findings, &(&1.rule == :r10_aggregate))
 
     assert Enum.any?(
@@ -606,7 +607,8 @@ defmodule AlaLintTest do
              &(&1.rule == :r10_aggregate and &1.message =~ "Cart")
            )
 
-    assert Enum.any?(sup.scored_findings, &(&1.rule == :r10_aggregate))
+    assert Enum.any?(sup.advisory_findings, &(&1.rule == :r10_aggregate))
+    refute Enum.any?(sup.scored_findings, &(&1.rule == :r10_aggregate))
   end
 
   test "R11 is advisory under strict, scored only under super-strict" do

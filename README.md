@@ -140,6 +140,11 @@ application: generic components are domain (UI) abstractions, and a generic shel
 interpreter is an execution model in the paradigms layer. (`app: true` on several layers, to model
 shell → page → view sub-layers, still works but is the older model.)
 
+A feature's parts must read as one unit. With `unit: ~r/^(App\.Features\.[^.]+)/`, a feature's UI
+instance named `App.Features.CartPanel` counts as a peer of `App.Features.Cart` (R1 and R10 findings);
+named `App.Features.Cart.Panel`, it is the same unit. Name a feature's parts under the feature, or
+widen the unit regex.
+
 The report then gives three things a migration cares about: **layer coverage** (% of functions
 assigned, with the unassigned worklist), **validity** errors (a `@ala_layer` tag naming an
 undeclared layer), and **R1** (do the assigned function→function edges drop?). With no layer map,
@@ -160,40 +165,48 @@ honest about which is which:
 | rule | what it flags | precision |
 |---|---|---|
 | **R1** peer coupling | with a layer map: **upward** and **cross-peer** edges between abstractions on the function call graph (an edge that doesn't drop; same-unit calls are internal). Without one: module dependency **cycles** | **exact** |
-| **subscribe** self-subscription | *advisory.* A module outside the application calling `subscribe` with a topic it fixes (a literal or module attribute): a receiver choosing its own sender (Spray §4.4.2). Subscribing in the application, or taking the topic as an argument, is fine | advisory |
+| **subscribe** self-subscription | *advisory.* A module outside the application calling `subscribe` with a topic it fixes (a literal or module attribute): a receiver choosing its own sender (Spray §4.4.2). Subscribing in the application, or taking the topic as an argument, is fine; so is a module in the **bottom** declared layer owning its topic (that is where a technical domain such as PubSub is abstracted) | advisory |
 | **R1-ref** template coupling | *advisory.* Peer/upward edges visible only in the module alias graph, not as a call — usually a cross-feature call inside a `~H` template (invisible to the AST). Reported to verify | advisory |
 | **R2** shared mutable state | `:ets` / `:persistent_term` / `Agent` usage — a shared-state channel to confirm isn't a peer back-channel | advisory |
-| **R3** baked calibration | "magic" numeric literals inside modules (hoist them to config/the composition) | heuristic |
+| **R3** baked calibration | "magic" numeric literals inside modules, including numbers in guards, and multi-word message text a person reads (a flash, a label) in a lower layer: hoist them to the composition | heuristic |
 | **R4** hidden state | the **process dictionary** (`Process.put/get`) — hidden state that should live in the abstraction that owns it (or a State-style abstraction wired in) | **exact** |
-| **R5** duplicated contracts | the same **identifier-like string** (`"item-removed"`, no whitespace, len 3–40) in ≥2 modules. Strings inside `~p`/`~H`/`~L` sigils are skipped — a `~p"/x"` verified route is compile-checked, not a silent contract | **exact** |
-| **R6** nameability | meaningless function/module names, and functions that just wrap a primitive | heuristic |
+| **R5** duplicated contracts | the same **identifier-like string** (`"item-removed"`, no whitespace, len 5–40) in ≥2 modules. Strings inside `~p`/`~H`/`~L` sigils are skipped — a `~p"/x"` verified route is compile-checked, not a silent contract — and so is a `/path` string shared with the `Router`, the route table's own contract | **exact** |
+| **R6** nameability | meaningless function/module names, and functions that just wrap a primitive (`f(a, b) = a + b`). A predicate (`name?`) over the module's own state and a module's single public function are concepts, not wrappers, and are spared | heuristic |
 | **R7** unearned abstractions | **dead** private functions, and trivial single-use one-liners with meaningless names. HEEx components (invoked as `<.name/>` in `~H`/`.heex`) and functions defined inside a `quote` block are recognised as *called* and never reported dead | heuristic, **advisory** |
 | **R9** owned interfaces | a `@callback` or `defprotocol` implemented (`@behaviour`, `defimpl`) by a **peer** in the same peer-forbidden layer, or by a **lower** layer. A port interface belongs below its implementers (a paradigm protocol, or a general module like `GenServer` that higher modules configure). The rest of R9 (outputs announce, no shared DTOs) is judgement | **exact** on explicit implementations |
 | **R10** shared entity | a struct read by ≥2 units **of its own** peer-forbidden layer (two features sharing a feature's struct) — share an identity key, keep data private. Higher layers reading a lower struct is a knowledge dependency, not R10 | heuristic |
-| **R10-aggregate** shared aggregate | a struct in a **lower** layer read by ≥2 units of a peer-forbidden layer above it — a legitimate domain abstraction (Spray's "ground symbol", §3.6.1), or shared-Entity coupling? Only runs under `--strict`/`--super-strict` | strict-only, **advisory** |
-| **R11** composition-only top layer | The application layer is a large share of the code (`--max-app-share`); a top-layer function **branches** (reported as *guard* or *logic*; `with` and a `case` that only routes ok/error outcomes are exempt, as the connection mechanism and routing); or it does **arithmetic**. Real findings; reported by default, scored only under `--super-strict` | advisory / super-strict |
-| **module size** | *advisory.* A module over `--max-module-loc` (default 500), or files averaging under 100 lines (Spray: "more abstractions than we need"; `--set module_size.min_avg=N`) | metric, **advisory** |
+| **R10-aggregate** shared aggregate | a struct in a **lower** layer read by ≥2 units of a peer-forbidden layer above it — a legitimate domain abstraction (Spray's "ground symbol", §3.6.1), or shared-Entity coupling? Reported under `--strict`/`--super-strict`, scored by no tier (a shared aggregate is a design to read, not a defect); `--enforce r10_aggregate` scores it | strict-only, **advisory** |
+| **R11** composition-only top layer | A top-layer function **branches** (reported as *guard* or *logic*; `with`, a `case` that only routes ok/error outcomes, and LiveView's `if connected?(socket)` are exempt, as the connection mechanism, routing, and the one framework departure the checklist names); it does **arithmetic**; it **handles data** (binds a lower-layer call's result and passes it to another lower-layer call, Spray §1.6.3); or it is part of a **working chain** (an app function calling another app function that computes or decides). Real findings; reported by default, scored only under `--super-strict` | advisory / super-strict |
+| **module size** | *advisory.* A module over `--max-module-loc` (default 500) | metric, **advisory** |
+| **module_avg** | files averaging under 100 lines (Spray: "more abstractions than we need"; `--set module_size.min_avg=N`). Reported at every tier, scored by none: Spray's bound is per abstraction, and an Elixir single-function domain module is deliberately small | metric, reported only |
+| **app_share** | the application layer's share of all functions (`--set app_share.max=F`, default 0.20). Reported at every tier, scored by none: a ratio that penalises an app for having many pages | metric, reported only |
 | **height** proliferation | longest chain of hops *between abstractions*; calls within one module (internal decomposition of a little ball of mud) and within the app layer count as zero altitude, so only real drops between abstractions add depth. Warns past a ceiling (default 5) | metric, **advisory** |
 | **passthrough** proliferation | a **public** function with 1 caller + 1 callee **in another module** whose body is a single delegating call — a rename over a different abstraction that hides no decision. Private helpers and same-module calls are internal decomposition and left alone; so are transforms (`sub(x) \|> Money.new()`, `%{s \| f: Callee.x()}`), predicate (`name?`) forwarders, HEEx components, and macro-generated defs | heuristic, **advisory** |
-| **public surface** | a module exposing more than `--max-public-funs` (default 12) public functions — a wide surface leaks internals, so the little ball of mud is no longer encapsulated. Aspirational purity: reported by default, scored only under `--super-strict` | metric, advisory / super-strict |
+| **public surface** | a module exposing more than `--max-public-funs` (default 12) public functions (distinct name/arity, so a multi-clause `handle_event` counts once) — a wide surface leaks internals, so the little ball of mud is no longer encapsulated. Aspirational purity: reported by default, scored only under `--super-strict` | metric, advisory / super-strict |
 | **layer cohesion** | *advisory metric.* Per layer, the share of its functions under one directory (Spray: directories separate layers). 100% = cohesive | metric, **advisory** |
 
 ### Strictness modes
 
 - **default** — the *required* checks are scored (see below); everything else is advisory (reported).
 - **`--strict`** — promotes the *obtainable* advisory checks (R7, module-size, height, pass-through,
-  R1-reference) to scored, so genuine cruft can fail the build.
+  R1-reference, subscribe) to scored, so genuine cruft can fail the build.
 - **`--super-strict`** — `--strict`, and additionally scores the *aspirational-purity* checks: **R11**
-  (no logic at the top / tight app-layer share), **public-surface** (keep the little ball of mud
-  encapsulated behind a small API), and **R10-aggregate** (a shared domain aggregate). These are
-  impractical to zero out in a real app and contested as metrics, so they are super-strict gates, not
-  strict ones, while still being *reported* by default.
+  (no logic at the top) and **public-surface** (keep the little ball of mud encapsulated behind a
+  small API). These are impractical to zero out in a real app and contested as metrics, so they are
+  super-strict gates, not strict ones, while still being *reported* by default.
+- **Reported at every tier, scored by none**: **app_share**, **module_avg** and **R10-aggregate**.
+  Each is a ratio or a design choice rather than a defect; `--enforce CHECK` scores one.
+
+Phoenix's generated framework files (`core_components.ex`, `layouts.ex`, `telemetry.ex`,
+`gettext.ex`, `endpoint.ex`, `error_html.ex`, `error_json.ex`, `application.ex`, `mailer.ex`,
+`repo.ex`) are skipped by default; pass `include_framework: true` to `AlaLint.analyze/2` to score
+them.
 
 Pair any mode with `--min-score N` to gate CI at the strictness you want. The **required** (scored by
 default) checks are **R1, R2, R3, R4, R5, R6, R9, R10, and layer-validity**; the **advisory** ones are
 **R7, module-size, abstraction-height, pass-through, R1-reference, subscribe** (promoted by
-`--strict`), plus **R11**, **public-surface**, and **R10-aggregate** (promoted only by
-`--super-strict`). **R9** is checked for owned interfaces (scored); its other parts are judgement. R8
+`--strict`), plus **R11** and **public-surface** (promoted only by `--super-strict`); **app_share**,
+**module_avg** and **R10-aggregate** are reported and never promoted by a tier. **R9** is checked for owned interfaces (scored); its other parts are judgement. R8
 is not checked (judgement).
 
 **R7, R11, module-size, abstraction height, pass-through, and the reference-level R1 signal are

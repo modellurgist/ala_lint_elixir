@@ -38,16 +38,17 @@ defmodule AlaLint do
     soft = Enum.uniq(Keyword.get(opts, :soft, []) ++ checks.soft)
 
     # strict promotes the *obtainable* advisory rules to scored (R7, module-size,
-    # height, pass-through, reference-level R1). R11 ("no logic at the top",
-    # app-layer share), public-surface, and the shared-domain-aggregate check are
-    # aspirational purity, scored only under super-strict. Everything advisory is
-    # still *reported* by default. `checks: %{rule => :scored}` promotes one rule.
-    super_strict_only = [:r11, :public_surface, :r10_aggregate]
+    # height, pass-through, reference-level R1, subscribe). R11 ("no logic at the
+    # top") and public-surface are aspirational purity, scored only under
+    # super-strict. The app-layer share, the average module size and the
+    # shared-domain-aggregate check are reported at every tier and scored by no
+    # tier: `checks: %{rule => :scored}` or `--enforce` promotes one rule.
+    super_strict_only = [:r11, :public_surface]
 
     enforce =
       cond do
         super_strict ->
-          Enum.uniq(Keyword.get(opts, :enforce, []) ++ Rules.advisory_rules() ++ [:r10_aggregate])
+          Enum.uniq(Keyword.get(opts, :enforce, []) ++ Rules.advisory_rules())
 
         strict ->
           Enum.uniq(
