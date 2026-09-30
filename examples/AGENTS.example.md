@@ -126,6 +126,9 @@ meaning of some data and an operation on it.
 Ask: "what do you know about?" The answer should be one thing. Can a reader use it without reading its
 body? (A predicate over the module's own state, `pending?/1`, and a single-function domain module such
 as `GiftWrapCost.call/2` are concepts, not wrappers.)
+Should: a public function takes only parameters it uses itself. Avoid a parameter it never reads and
+only carries down to a function further below (a "tramp" parameter): give that lower abstraction its
+input or configuration from the composition instead.
 
 **R7. Every abstraction earns its existence.**
 Do: keep the least machinery that works. Prefer composing existing general parts over inventing new ones.
@@ -157,6 +160,9 @@ as a result ("this happened") rather than an operation ("do this next"). Any tec
 is fine: facts the page maps, results on the feature's own ports that the page binds, an instance that
 announces what it did not handle itself, or a target the page passes in as configuration.
 Ask: could the page send this output somewhere else without editing the feature?
+Configuration: should be set once, apart from run-time data. One Elixir way: configuration as the
+first argument (a map or struct built at the composition), run-time inputs after it, as in
+`Shipping.cost(config, order)`; or a struct built once that carries its configuration.
 
 **R10. No two features know the meaning of the same data.**
 Do: keep each feature's data private to it. When features relate, use any technique that keeps their
@@ -231,7 +237,7 @@ When a rule is hard to hold, these are standard moves. None is required; the rul
 
 `mix ala.lint` scores the required rules (R1, R2, R3, R4, R5, R6, R9's owned interfaces, R10, layer
 validity); `--strict` adds the obtainable prompts (R7, module size over 500 lines, abstraction height,
-pass-throughs, reference-level R1, self-subscription); `--super-strict` adds the purity targets (R11
+pass-throughs, tramp parameters, reference-level R1, self-subscription); `--super-strict` adds the purity targets (R11
 and a public-surface cap, counted per function, not per clause). Three checks are reported at every
 level and scored by none, because they are ratios or design choices: the application's share of
 functions, files averaging under 100 lines, and a shared lower-layer aggregate. Phoenix's generated
@@ -248,7 +254,8 @@ Read your diff and answer honestly:
 3. Is any state hidden in a process, global, or shared mutable, or managed by something that doesn't
    own it? (R2, R4)
 4. Is there a magic string or shape two modules agree on silently? (R5)
-5. Does any new module just wrap or rename something, earning no concept? (R6, R7)
+5. Does any new module just wrap or rename something, earning no concept? Does any public function take
+   a parameter only to carry it down to something else? (R6, R7)
 6. Does any output name its destination, or any `@callback` or struct get defined for a peer? (R9)
 7. Do two features now share a data struct? (R10)
 8. Did the top layer gain a decision, a computation, or a value fetched from one abstraction and handed

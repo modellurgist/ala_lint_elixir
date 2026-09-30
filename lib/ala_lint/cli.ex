@@ -34,6 +34,7 @@ defmodule AlaLint.CLI do
     module_size    module over N lines          --set module_size.max=N     (default 500)
     height         hops between abstractions     --set height.max=N          (default 5)
     passthrough    public cross-module rename
+    tramp          a parameter a public function never reads, only passes on (R6 should)
     r1_ref         reference-level R1 (templates, aliases)
     subscribe      a module subscribing itself to a topic it fixes (R1/R5)
 

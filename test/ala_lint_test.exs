@@ -100,6 +100,93 @@ defmodule AlaLintTest do
     File.rm_rf!(dir)
   end
 
+  test "flags a tramp parameter carried two hops unread, not a one-hop use" do
+    dir = Path.join(System.tmp_dir!(), "ala_lint_tramp_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+
+    File.write!(Path.join(dir, "t.ex"), """
+    defmodule Order do
+      def total(cart, opts) do                 # carries opts through Pricing to Tax: flagged
+        n = length(cart.items)
+        n + Pricing.subtotal(cart.items, opts)
+      end
+      def piped(cart, opts) do                 # the same, through a pipe: flagged
+        n = length(cart.items)
+        n + (opts |> Pricing.subtotal_for(cart.items))
+      end
+      def taxed(cart, opts) do                 # one hop: Tax reads opts, so not flagged
+        n = length(cart.items)
+        n + Tax.amount(n, opts)
+      end
+      def shipped(cart, opts) do               # reads opts itself: not flagged
+        if opts.express, do: Pricing.subtotal(cart.items, opts), else: 0
+      end
+      def counts(list, acc), do: {length(list), Map.put(acc, :n, 1)}
+      def handle_info(msg, socket), do: {:noreply, Pricing.note(socket, msg)}
+      defp helper(x, opts), do: Pricing.subtotal(x, opts)
+      def uses_helper(x), do: helper(x, %{})
+    end
+    defmodule Pricing do
+      def subtotal(items, opts) do             # one hop to Tax, which reads it: not flagged
+        sub = Enum.sum(items)
+        sub + Tax.amount(sub, opts)
+      end
+      def subtotal_for(opts, items) do
+        sub = Enum.sum(items)
+        sub + Tax.amount(sub, opts)
+      end
+      def note(socket, _msg), do: Tax.note(socket)
+    end
+    defmodule Tax do
+      def amount(sub, opts), do: sub * opts.rate
+      def note(socket), do: socket
+    end
+    """)
+
+    r = AlaLint.analyze(dir)
+    tr = Enum.filter(r.findings, &(&1.rule == :tramp))
+
+    assert Enum.any?(tr, &(&1.message =~ "Order.total/2" and &1.message =~ "`opts`"))
+    assert Enum.any?(tr, &(&1.message =~ "piped/2"))
+    refute Enum.any?(tr, &(&1.message =~ "taxed"))
+    refute Enum.any?(tr, &(&1.message =~ "shipped"))
+    refute Enum.any?(tr, &(&1.message =~ "Pricing.subtotal"))
+    refute Enum.any?(tr, &(&1.message =~ "counts"))
+    refute Enum.any?(tr, &(&1.message =~ "handle_info"))
+    refute Enum.any?(tr, &(&1.message =~ "helper"))
+    assert Enum.all?(tr, &(&1.severity == :warn))
+    File.rm_rf!(dir)
+  end
+
+  test "does not call a runner carrying data into a port (a protocol) a tramp" do
+    dir =
+      Path.join(System.tmp_dir!(), "ala_lint_tramp_port_#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(dir)
+
+    File.write!(Path.join(dir, "r.ex"), """
+    defprotocol Step do
+      def push(step, data)
+    end
+    defmodule Runner do
+      def feed(program, id, data) do
+        part = Map.fetch!(program, id)
+        Circuit.push(part, data)
+      end
+    end
+    defmodule Circuit do
+      def push(part, data) do
+        out = Step.push(part, data)
+        {part, out}
+      end
+    end
+    """)
+
+    r = AlaLint.analyze(dir)
+    refute Enum.any?(r.findings, &(&1.rule == :tramp))
+    File.rm_rf!(dir)
+  end
+
   test "does not flag a HEEx function component as dead code (called from ~H markup)" do
     dir = Path.join(System.tmp_dir!(), "ala_lint_heex_#{System.unique_integer([:positive])}")
     File.mkdir_p!(dir)

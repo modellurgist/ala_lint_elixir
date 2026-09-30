@@ -107,7 +107,8 @@ then checks that tree. It scores what the notation carries: R1 edge altitude, R4
 R5 `q`, R3 via `{app-literal?}`/`{app-literal}`/`{intrinsic-literal}` literal marks, and —
 from marks the encoder **stamps** rather than asks a human to judge — R10 (`&entity`/
 `&aggregate`), R11 (`(branches)` on an app-layer function), pass-throughs (`~>`), and
-public surface (via `(private)`). R6/R7 stay unencodable; height and the R11 app-share
+public surface (via `(private)`). R6/R7 stay unencodable, and so does the tramp-parameter check
+(the encoding doesn't carry parameters); height and the R11 app-share
 aggregate are reproduced only approximately (the encoding carries module-level edges, not
 the full call graph). The encoder seeds `{app-literal?}` on each function owning a
 configuration-candidate literal (value opaque; the source scan has its `file:line`); a
@@ -185,6 +186,7 @@ honest about which is which:
 | **app_share** | the application layer's share of all functions (`--set app_share.max=F`, default 0.20). Reported at every tier, scored by none: a ratio that penalises an app for having many pages | metric, reported only |
 | **height** proliferation | longest chain of hops *between abstractions*; calls within one module (internal decomposition of a little ball of mud) and within the app layer count as zero altitude, so only real drops between abstractions add depth. Warns past a ceiling (default 5) | metric, **advisory** |
 | **passthrough** proliferation | a **public** function with 1 caller + 1 callee **in another module** whose body is a single delegating call — a rename over a different abstraction that hides no decision. Private helpers and same-module calls are internal decomposition and left alone; so are transforms (`sub(x) \|> Money.new()`, `%{s \| f: Callee.x()}`), predicate (`name?`) forwarders, HEEx components, and macro-generated defs | heuristic, **advisory** |
+| **tramp** parameter | *advisory, R6's "should".* A **public** function never reads a parameter and only hands it to a function in another project module (a lower one, given a layer map) that doesn't read it either and hands it further down: two hops of carrying, Spray's "extra parameters that don't have anything to do with them, just so they can pass state data through to even lower functions" (§3.11.1). One hop is ordinary use of a lower abstraction and is left alone; so are private helpers, framework callbacks (`handle_event`, `mount`, `init`, …), pass-throughs, the application layer (R11 reports its data handling), and carrying into a protocol or behaviour (a runner delivering to a port) | heuristic, **advisory** |
 | **public surface** | a module exposing more than `--max-public-funs` (default 12) public functions (distinct name/arity, so a multi-clause `handle_event` counts once) — a wide surface leaks internals, so the little ball of mud is no longer encapsulated. Aspirational purity: reported by default, scored only under `--super-strict` | metric, advisory / super-strict |
 | **layer cohesion** | *advisory metric.* Per layer, the share of its functions under one directory (Spray: directories separate layers). 100% = cohesive | metric, **advisory** |
 
@@ -192,7 +194,7 @@ honest about which is which:
 
 - **default** — the *required* checks are scored (see below); everything else is advisory (reported).
 - **`--strict`** — promotes the *obtainable* advisory checks (R7, module-size, height, pass-through,
-  R1-reference, subscribe) to scored, so genuine cruft can fail the build.
+  tramp, R1-reference, subscribe) to scored, so genuine cruft can fail the build.
 - **`--super-strict`** — `--strict`, and additionally scores the *aspirational-purity* checks: **R11**
   (no logic at the top) and **public-surface** (keep the little ball of mud encapsulated behind a
   small API). These are impractical to zero out in a real app and contested as metrics, so they are
@@ -207,12 +209,12 @@ them.
 
 Pair any mode with `--min-score N` to gate CI at the strictness you want. The **required** (scored by
 default) checks are **R1, R2, R3, R4, R5, R6, R9, R10, and layer-validity**; the **advisory** ones are
-**R7, module-size, abstraction-height, pass-through, R1-reference, subscribe** (promoted by
+**R7, module-size, abstraction-height, pass-through, tramp, R1-reference, subscribe** (promoted by
 `--strict`), plus **R11** and **public-surface** (promoted only by `--super-strict`); **app_share**,
 **module_avg** and **R10-aggregate** are reported and never promoted by a tier. **R9** is checked for owned interfaces (scored); its other parts are judgement. R8
 is not checked (judgement).
 
-**R7, R11, module-size, abstraction height, pass-through, and the reference-level R1 signal are
+**R7, R11, module-size, abstraction height, pass-through, tramp, and the reference-level R1 signal are
 advisory** — reported but not folded into the score. Reuse is evidence not a requirement (Spray never
 demanded a second caller), and a source-encoded app layer legitimately branches, so the tool won't
 fail a build on these alone. Promote any to a hard failure with `--enforce r7` / `--enforce r11` /

@@ -30,6 +30,7 @@ defmodule AlaLint.Rules do
     app_share: 1,
     height: 1,
     passthrough: 1,
+    tramp: 1,
     public_surface: 1,
     layer: 3
   }
@@ -47,6 +48,7 @@ defmodule AlaLint.Rules do
     :module_size,
     :height,
     :passthrough,
+    :tramp,
     :public_surface,
     :r1_ref,
     :subscribe
@@ -63,6 +65,7 @@ defmodule AlaLint.Rules do
     r7: :warn,
     height: :warn,
     passthrough: :warn,
+    tramp: :warn,
     r1_ref: :warn,
     subscribe: :warn,
     r11: :warn,
@@ -102,6 +105,7 @@ defmodule AlaLint.Rules do
       r4(model) ++
       r5(model) ++
       r6(model) ++
+      tramp(model) ++
       r7(model) ++
       r9(model) ++
       r10(model) ++
@@ -1161,6 +1165,170 @@ defmodule AlaLint.Rules do
 
   defp terminal_operand?(lit) when is_number(lit) or is_binary(lit) or is_atom(lit), do: true
   defp terminal_operand?(_), do: false
+
+  # ── Tramp parameters (R6 "should"): Spray §3.11.1 — middle-layer functions
+  # "end up with extra parameters that don't have anything to do with them,
+  # just so they can pass state data through to even lower functions". Flagged
+  # when a public function never reads a parameter and only hands it to another
+  # project module's function (a lower one, given a layer map) that doesn't read
+  # it either and hands it further down: two hops of carrying. One hop is
+  # ordinary use of a lower abstraction on the function's own input, and carrying
+  # into a protocol or behaviour is a runner delivering to a port, so both are
+  # left alone. Private helpers are the abstraction's inside, framework callbacks
+  # have fixed heads, pass-throughs are reported separately, and the application
+  # layer's data handling is R11's. ──
+  @callback_names ~w(mount handle_event handle_info handle_params handle_call handle_cast
+                     handle_continue handle_async init terminate update render call
+                     code_change on_mount)a
+
+  def tramp(model) do
+    pt = model |> passthrough_ids() |> MapSet.new(fn {id, _} -> id end)
+    publics = public_clauses(model)
+
+    for m <- model.modules,
+        not app_module_with_layers?(model, m.name),
+        {{name, arity}, clauses} <- Map.get(publics, m.name, %{}),
+        not MapSet.member?(pt, {m.name, name, arity}),
+        pos <- 0..(arity - 1)//1,
+        {:fwd, var, targets} <- [forwarded_at(clauses, pos, m, model)],
+        {via, below} <- [carried_further(targets, publics, model)],
+        via != nil do
+      f(
+        :tramp,
+        m.name,
+        model,
+        m,
+        hd(clauses).line,
+        "#{short(m.name)}.#{name}/#{arity} never reads `#{var}`; it only carries it through #{short(via)} to #{short(below)}, which is where it is used — a tramp parameter. Let the composition give #{short(below)} that input or configuration directly (R6 should, §3.11.1)"
+      )
+    end
+  end
+
+  # module => %{{name, arity} => [clause]} for the public, hand-written,
+  # non-callback functions that the tramp check considers.
+  defp public_clauses(model) do
+    for m <- model.modules, into: %{} do
+      {m.name,
+       m.functions
+       |> Enum.reject(&(&1.private or &1.macro_generated or &1.name in @callback_names))
+       |> Enum.group_by(&{&1.name, &1.arity})}
+    end
+  end
+
+  # The first forwarding target whose own parameter at that position is also only
+  # forwarded: {that module, the module it forwards to}, or {nil, nil}.
+  defp carried_further(targets, publics, model) do
+    Enum.find_value(targets, {nil, nil}, fn {mod, fun, arity, pos} ->
+      with clauses when is_list(clauses) <- get_in(publics, [mod, {fun, arity}]),
+           gm when gm != nil <- Enum.find(model.modules, &(&1.name == mod)),
+           {:fwd, _var, [{below, _, _, _} | _]} <- forwarded_at(clauses, pos, gm, model),
+           false <- port?(model, below) do
+        {mod, below}
+      else
+        _ -> nil
+      end
+    end)
+  end
+
+  # Delivering a value into a protocol or behaviour is putting it on a port, which
+  # is what a runner or connection mechanism is for, so that carrying is wiring.
+  defp port?(model, name) do
+    case Enum.find(model.modules, &(&1.name == name)) do
+      %{interface: kind} when kind in [:protocol, :behaviour] -> true
+      _ -> false
+    end
+  end
+
+  # {:fwd, var, targets} when every clause either ignores position `pos` (`_x`)
+  # or binds it to a plain variable that is only forwarded, and one forwards;
+  # :used otherwise.
+  defp forwarded_at(clauses, pos, m, model) do
+    verdicts =
+      for fun <- clauses do
+        case Enum.at(fun.params, pos) do
+          {v, _, ctx} when is_atom(v) and is_atom(ctx) ->
+            if String.starts_with?(to_string(v), "_"),
+              do: :ignored,
+              else: forwarded_only(fun.body, v, m, model)
+
+          _ ->
+            :used
+        end
+      end
+
+    cond do
+      Enum.any?(verdicts, &(&1 == :used)) -> :used
+      fwd = Enum.find(verdicts, &match?({:fwd, _, _}, &1)) -> fwd
+      true -> :used
+    end
+  end
+
+  defp forwarded_only(nil, _var, _m, _model), do: :used
+
+  defp forwarded_only(body, var, m, model) do
+    {_, {total, targets}} =
+      Macro.prewalk(body, {0, []}, fn
+        {^var, _, ctx} = node, {t, ts} when is_atom(ctx) ->
+          {node, {t + 1, ts}}
+
+        {:|>, _, [{^var, _, ctx}, {_, _, rargs} = rhs]} = node, {t, ts}
+        when is_atom(ctx) and is_list(rargs) ->
+          case lower_project_call(rhs, m, model) do
+            nil -> {node, {t, ts}}
+            mod -> {node, {t, [{mod, call_name(rhs), length(rargs) + 1, 0} | ts]}}
+          end
+
+        {_, _, args} = node, {t, ts} = acc when is_list(args) ->
+          case lower_project_call(node, m, model) do
+            nil ->
+              {node, acc}
+
+            mod ->
+              hits =
+                for {arg, i} <- Enum.with_index(args),
+                    match?({^var, _, ctx} when is_atom(ctx), arg),
+                    do: {mod, call_name(node), length(args), i}
+
+              {node, {t, hits ++ ts}}
+          end
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    if targets != [] and length(targets) == total,
+      do: {:fwd, var, Enum.reverse(targets)},
+      else: :used
+  end
+
+  defp call_name({{:., _, [_, fun]}, _, _}), do: fun
+
+  # The project module a remote call targets, when it is another module and
+  # (given a layer map) sits in a lower layer; nil otherwise.
+  defp lower_project_call(node, m, model) do
+    with mod when is_binary(mod) <- remote_target(node, m, model),
+         true <- mod != m.name,
+         true <- Map.has_key?(Map.get(model, :project_index, %{}), mod),
+         true <- lower_or_unlayered?(model, m.name, mod) do
+      mod
+    else
+      _ -> nil
+    end
+  end
+
+  defp lower_or_unlayered?(%{layers: %{index: idx}}, from, to) do
+    case {idx[from], idx[to]} do
+      {a, b} when is_integer(a) and is_integer(b) -> b > a
+      _ -> true
+    end
+  end
+
+  defp lower_or_unlayered?(_model, _from, _to), do: true
+
+  defp app_module_with_layers?(%{layers: %{index: idx, app_layers: app}}, name),
+    do: (i = idx[name]) != nil and i in app
+
+  defp app_module_with_layers?(_model, _name), do: false
 
   # ── R7: abstraction earns its existence (heuristic, conservative) ────────
   # A private called *once* is NOT flagged — a named pipeline step earns its

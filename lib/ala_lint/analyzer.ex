@@ -46,6 +46,7 @@ defmodule AlaLint.Analyzer do
       :module,
       :file,
       :layer_tag,
+      params: [],
       macro_generated: false
     ]
   end
@@ -318,6 +319,7 @@ defmodule AlaLint.Analyzer do
       line: meta[:line] || 0,
       private: def_kw == :defp,
       body: body,
+      params: fun_params(head),
       module: st.current,
       file: st.file,
       layer_tag: Map.get(st, :pending_layer),
@@ -464,6 +466,10 @@ defmodule AlaLint.Analyzer do
 
   defp fun_name_arity({name, _, nil}) when is_atom(name), do: {name, 0}
   defp fun_name_arity(_), do: {:__unknown__, 0}
+
+  defp fun_params({:when, _, [inner | _]}), do: fun_params(inner)
+  defp fun_params({_name, _, args}) when is_list(args), do: args
+  defp fun_params(_), do: []
 
   defp fun_body([[do: body] | _]), do: body
   defp fun_body([_args, [do: body] | _]), do: body

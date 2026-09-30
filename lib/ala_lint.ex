@@ -37,7 +37,7 @@ defmodule AlaLint do
     disabled = Enum.uniq(Keyword.get(opts, :disabled, []) ++ checks.disabled)
     soft = Enum.uniq(Keyword.get(opts, :soft, []) ++ checks.soft)
 
-    # strict promotes the *obtainable* advisory rules to scored (R7, module-size,
+    # strict promotes the *obtainable* advisory rules to scored (R7, module-size, tramp,
     # height, pass-through, reference-level R1, subscribe). R11 ("no logic at the
     # top") and public-surface are aspirational purity, scored only under
     # super-strict. The app-layer share, the average module size and the
