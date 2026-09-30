@@ -340,11 +340,107 @@ defmodule AlaLint.Rules do
         )
       end
 
+    iterates =
+      for m <- model.modules,
+          {{name, arity}, clauses} <- Enum.group_by(m.functions, &{&1.name, &1.arity}),
+          MapSet.member?(app_id_set, {m.name, name, arity}),
+          looping = Enum.find(clauses, &iterates?(&1.body)),
+          looping != nil do
+        f(
+          :r11,
+          m.name,
+          model,
+          m,
+          looping.line,
+          "#{short(m.name)}.#{name}/#{arity} iterates in the application layer (a `for` comprehension) — Spray's \"for loop\" (§1.6.3): move the loop into a domain abstraction or a generic component (R11)"
+        )
+      end
+
     size ++
-      branches ++ computes ++ handles_data(model, app_id_set) ++ working_chains(model, app_id_set)
+      branches ++
+      computes ++
+      iterates ++
+      handles_data(model, app_id_set) ++
+      passes_through(model, app_id_set) ++ working_chains(model, app_id_set)
   end
 
   def r11(_model), do: []
+
+  defp iterates?(body) do
+    {_, found} =
+      Macro.prewalk(body, false, fn
+        {:for, _, args} = node, _acc when is_list(args) -> {node, true}
+        node, acc -> {node, acc}
+      end)
+
+    found
+  end
+
+  # The same §1.6.3 handling, without a variable: one lower abstraction's result goes straight into
+  # another lower abstraction's call as an argument (`A.f(x, B.g(y))`). Pipes are not counted: a pipe
+  # of stages is how Elixir writes Spray's §1.6.4 chain (`readings |> Offset.map() |> Filter.smooth()`),
+  # which is composition, and statically a pipe of stages looks the same as a pipe of values.
+  defp passes_through(model, app_id_set) do
+    %{index: idx} = model.layers
+
+    for m <- model.modules,
+        {{name, arity}, clauses} <- Enum.group_by(m.functions, &{&1.name, &1.arity}),
+        MapSet.member?(app_id_set, {m.name, name, arity}),
+        lower = fn mod ->
+          case idx[mod] do
+            nil -> false
+            i -> i > idx[m.name]
+          end
+        end,
+        {from, to} <- [Enum.find_value(clauses, &nested_lower(&1.body, m, model, lower))],
+        from != nil do
+      f(
+        :r11,
+        m.name,
+        model,
+        m,
+        hd(clauses).line,
+        "#{short(m.name)}.#{name}/#{arity} passes #{short(from)}'s result straight into #{short(to)} — the application is handling data between abstractions; let a runner or a wire carry it (R11, §1.6.3)"
+      )
+    end
+  end
+
+  defp nested_lower(nil, _m, _model, _lower), do: nil
+
+  defp nested_lower(body, m, model, lower) do
+    {_, found} =
+      Macro.prewalk(body, nil, fn
+        node, nil ->
+          {node, nested_pair(node, m, model, lower)}
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    found
+  end
+
+  defp nested_pair({:|>, _, _}, _m, _model, _lower), do: nil
+
+  defp nested_pair({{:., _, [{:__aliases__, _, _}, _]}, _, args} = node, m, model, lower)
+       when is_list(args) do
+    with to when to != nil <- remote_target(node, m, model),
+         true <- lower.(to) do
+      Enum.find_value(args, fn arg ->
+        from = if constructor?(arg), do: nil, else: remote_target(arg, m, model)
+        if from != nil and lower.(from) and from != to, do: {from, to}
+      end)
+    else
+      _ -> nil
+    end
+  end
+
+  defp nested_pair(_node, _m, _model, _lower), do: nil
+
+  # Building an instance inside another's configuration (`Adapter.new(Cart, Cart.new(...))`) is
+  # instantiation, Spray's `WireIn(new Filter(...))`, not a hand-off of run-time data.
+  defp constructor?({{:., _, [_, :new]}, _, _}), do: true
+  defp constructor?(_), do: false
 
   # Spray §1.6.3: the application "handles the data" when it catches one abstraction's result only
   # to pass it to another. Detected as: a variable bound from a call into a lower-layer module, then

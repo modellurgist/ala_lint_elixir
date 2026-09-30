@@ -158,6 +158,57 @@ defmodule AlaLintTest do
     File.rm_rf!(dir)
   end
 
+  test "R11 sees iteration and nested hand-offs in the application layer" do
+    dir = Path.join(System.tmp_dir!(), "ala_lint_r11_nest_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+
+    File.write!(Path.join(dir, "page.ex"), """
+    defmodule App.Page do
+      def finalize(id), do: for(item <- Store.items(id), do: Stock.take(item))
+      def add_line(id, pid), do: Store.add(id, Catalog.get(pid))
+      def piped(pid), do: Catalog.get(pid) |> Store.put()
+      def wiring(id), do: Store.items(id) |> Store.count()
+      def configure(pid), do: assign(%{}, :p, Catalog.get(pid))
+      def instance(pid), do: Store.put(Catalog.new(pid))
+      defp assign(m, k, v), do: Map.put(m, k, v)
+    end
+    defmodule Store do
+      def items(_), do: []
+      def add(_, _), do: :ok
+      def put(_), do: :ok
+      def count(l), do: length(l)
+    end
+    defmodule Catalog do
+      def get(_), do: %{}
+      def new(_), do: %{}
+    end
+    defmodule Stock do
+      def take(_), do: :ok
+    end
+    """)
+
+    layers = [
+      {:app, [~r/^App\./], peer_ok: true},
+      {:domain, [~r/^(Store|Catalog|Stock)$/], peer_ok: true}
+    ]
+
+    r = AlaLint.analyze(dir, layers: layers)
+    r11 = r.findings |> Enum.filter(&(&1.rule == :r11)) |> Enum.map(& &1.message)
+
+    assert Enum.any?(r11, &(&1 =~ "finalize/1 iterates"))
+    assert Enum.any?(r11, &(&1 =~ "add_line/2 passes Catalog's result straight into Store"))
+
+    refute Enum.any?(r11, &(&1 =~ "piped/1")),
+           "a pipe reads as a chain of stages (§1.6.4), not counted"
+
+    refute Enum.any?(r11, &(&1 =~ "wiring/1")), "a pipe within one module is not a hand-off"
+
+    refute Enum.any?(r11, &(&1 =~ "configure/1")),
+           "landing a result in the page is not a hand-off"
+
+    File.rm_rf!(dir)
+  end
+
   test "does not call a runner carrying data into a port (a protocol) a tramp" do
     dir =
       Path.join(System.tmp_dir!(), "ala_lint_tramp_port_#{System.unique_integer([:positive])}")
