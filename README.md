@@ -5,6 +5,9 @@ coupling & layering, requirements-locus, state-as-a-wire, cross-boundary contrac
 and abstraction minimality. It walks `lib/**/*.ex`, reports each violation with a location, and
 computes an overall design-health score.
 
+New to ALA? [getdown.dev](https://getdown.dev) has an introduction to it, guides to applying it,
+and worked examples, including posts on this linter and the checklist.
+
 This is the **Elixir implementation** of the ALA Checklist and encoding. The checklist itself is
 language-agnostic and lives in its own repository:
 [modellurgist/ala_checklist](https://github.com/modellurgist/ala_checklist). Example designs the
