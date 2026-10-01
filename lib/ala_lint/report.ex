@@ -174,7 +174,7 @@ defmodule AlaLint.Report do
     height_note =
       if report.height > max_h, do: "  ⚠ exceeds max #{max_h}", else: "  (max #{max_h})"
 
-    header = """
+    header = unassigned_banner(report) <> """
     ── ALA Checklist (R1–R11) ─────────────────────────────────────────────
     modules: #{report.modules}   functions: #{report.functions}   LOC: #{report.loc}
     abstraction height: #{report.height} call-levels (function graph)#{height_note}
@@ -285,6 +285,28 @@ defmodule AlaLint.Report do
       end)
 
     "filesystem cohesion (advisory — Spray: dirs separate layers):\n" <> body
+  end
+
+  @doc "A loud warning when modules match no layer: the layer-aware checks skip them. Empty otherwise."
+  def unassigned_banner(report) do
+    case Enum.filter(report.findings, &(&1.rule == :unassigned)) do
+      [] ->
+        ""
+
+      found ->
+        names = found |> Enum.map(& &1.module) |> Enum.sort()
+        shown = names |> Enum.take(10) |> Enum.map_join("\n", &"    #{&1}")
+        more = if length(names) > 10, do: "\n    … +#{length(names) - 10} more", else: ""
+        funs = report.layer_coverage && length(report.layer_coverage.unassigned)
+
+        """
+        !! WARNING: #{length(names)} module(s)#{if funs, do: " (#{funs} functions)", else: ""} match no layer in the layer map.
+        !! R1 altitude, R3, R10, R11 and the LiveView checks SKIP them, so this score covers less
+        !! than the codebase. Place each in a layer (or name it to fit a layer's pattern):
+        #{shown}#{more}
+
+        """
+    end
   end
 
   defp coverage_line(nil),

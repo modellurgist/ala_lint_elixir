@@ -30,7 +30,10 @@ defmodule AlaLint.Analyzer do
               # interfaces this module implements: [{written_name, implementer, line}]
               implements: [],
               # `*.subscribe(...)` calls: [{line, :literal | :attribute | :dynamic}]
-              subscriptions: []
+              subscriptions: [],
+              # HEEx markup this module renders: `~H` sigils and colocated `.heex`
+              # files, as [{line, text}] (for template checks)
+              templates: []
   end
 
   defmodule Fun do
@@ -91,6 +94,7 @@ defmodule AlaLint.Analyzer do
       files
       |> Enum.flat_map(&modules_in_file/1)
       |> Enum.map(&resolve_local_calls/1)
+      |> attach_heex_files(roots, exclude)
 
     pindex = project_index(mods)
     mods = Enum.map(mods, &resolve_implements(&1, pindex))
@@ -157,6 +161,33 @@ defmodule AlaLint.Analyzer do
       [] -> hd(roots)
       parts -> Path.join(parts)
     end
+  end
+
+  # A `.heex` file belongs to the module in the same directory with the same base name
+  # (`index.html.heex` beside `index.ex`), Phoenix's colocation convention.
+  defp attach_heex_files(mods, roots, exclude) do
+    heex =
+      roots
+      |> Enum.flat_map(&Path.wildcard(Path.join(&1, "**/*.heex")))
+      |> Enum.reject(fn f -> Enum.any?(exclude, &Regex.match?(&1, f)) end)
+
+    owner_file = fn heex_file ->
+      base = heex_file |> Path.basename() |> String.split(".") |> hd()
+      Path.join(Path.dirname(heex_file), base <> ".ex")
+    end
+
+    by_file = Enum.group_by(heex, owner_file)
+
+    # a file's first module owns its colocated template, not modules nested in it
+    first_in_file =
+      mods |> Enum.group_by(& &1.file) |> Map.new(fn {f, ms} -> {f, Enum.min_by(ms, & &1.line).name} end)
+
+    Enum.map(mods, fn m ->
+      case first_in_file[m.file] == m.name && Map.get(by_file, m.file) do
+        files when is_list(files) -> %{m | templates: m.templates ++ Enum.map(files, &{1, File.read!(&1)})}
+        _ -> m
+      end
+    end)
   end
 
   defp generated?(file) do
@@ -399,6 +430,13 @@ defmodule AlaLint.Analyzer do
   # contract), and a `~H`/`~L` template's markup is not code. Don't descend, so
   # their strings aren't collected as R5 literals. (HEEx component references
   # are picked up separately by a raw-source scan, not this walk.)
+  defp walk({sigil, meta, [{:<<>>, _, parts} | _]} = node, st, _k)
+       when sigil in [:sigil_H, :sigil_L] and st.current != nil do
+    text = parts |> Enum.filter(&is_binary/1) |> Enum.join()
+    template = {meta[:line] || 0, text}
+    {node, update_mod(st, st.current, fn m -> %{m | templates: m.templates ++ [template]} end)}
+  end
+
   defp walk({sigil, _meta, _args} = node, st, _k)
        when sigil in [:sigil_p, :sigil_P, :sigil_H, :sigil_L] do
     {node, st}

@@ -37,17 +37,27 @@ defmodule AlaLint.CLI do
     tramp          a parameter a public function never reads, only passes on (R6 should)
     r1_ref         reference-level R1 (templates, aliases)
     subscribe      a module subscribing itself to a topic it fixes (R1/R5)
+    ports          a feature's ports/0 declaration drifting from the outputs it builds
 
   ASPIRATIONAL  (reported by default; scored only under --super-strict)
     r11            no logic at the top: branches (guard/logic; `with`,
                    ok/error routing and `connected?` exempt), arithmetic,
-                   handling data between abstractions, working chains
+                   handling data between abstractions, working chains,
+                   logic in application templates, assigns handed to a
+                   feature's input, store work in page helpers
     public_surface wide public API (encapsulation) --set public_surface.max=N (default 12)
 
   REPORTED ONLY  (never scored by a tier; --enforce CHECK to score one)
     app_share      application-layer share of functions --set app_share.max=F (default 0.20)
     module_avg     files averaging under N lines         --set module_size.min_avg=N (default 100)
     r10_aggregate  shared domain aggregate (under --strict and above)
+    unassigned     a module matching no layer: the layer-aware checks skip it (loud warning;
+                   --require-layers fails the run)
+    ports_unwired  a declared output no composer names (a prompt for a coverage test)
+    wiring_closure a closure over a private page helper in wiring (an R8 prompt)
+    r11_share      share of application functions holding logic (not capped like R11)
+    hops           a page relaying between LiveComponents (one message hop per effect)
+    vocabulary     kinds a paradigm dispatches on (the wiring vocabulary a reader learns)
 
   NOT MACHINE-SCORED  (a human reads for these)
     r8    reads as the requirements

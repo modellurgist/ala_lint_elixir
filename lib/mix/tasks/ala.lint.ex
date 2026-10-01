@@ -29,6 +29,7 @@ defmodule Mix.Tasks.Ala.Lint do
     --strict             score the obtainable advisory checks (R7, module-size, height, pass-through, R1-ref)
     --super-strict       --strict, plus the aspirational checks (R11, public-surface, R10-aggregate)
     --layers-module MOD  a module exporting layers/0 → layer-aware R1/R3/R10/R11 + coverage
+    --require-layers     exit non-zero if any module matches no layer (the layer-aware checks skip it)
     --limit N            show up to N findings (default 40)
     --list-checks        print every check with its tier and threshold, then exit
     --help, -h           show this help
@@ -63,6 +64,7 @@ defmodule Mix.Tasks.Ala.Lint do
           min_score: :integer,
           config_module: :keep,
           layers_module: :string,
+          require_layers: :boolean,
           enforce: :keep,
           disable: :keep,
           set: :keep,
@@ -122,6 +124,15 @@ defmodule Mix.Tasks.Ala.Lint do
 
     report = AlaLint.analyze(roots, analyze_opts)
     Mix.shell().info(AlaLint.Report.to_text(report, limit: opts[:limit] || 40))
+
+    case AlaLint.Report.unassigned_banner(report) do
+      "" -> :ok
+      banner -> Mix.shell().error(String.trim_trailing(banner))
+    end
+
+    if (opts[:require_layers] || Map.get(file, :require_layers, false)) and
+         Enum.any?(report.findings, &(&1.rule == :unassigned)),
+       do: Mix.raise("modules match no layer (see the warning above); --require-layers is set")
 
     case min_score do
       nil ->

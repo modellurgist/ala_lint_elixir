@@ -32,7 +32,14 @@ defmodule AlaLint.Rules do
     passthrough: 1,
     tramp: 1,
     public_surface: 1,
-    layer: 3
+    layer: 3,
+    ports: 2,
+    ports_unwired: 1,
+    wiring_closure: 1,
+    r11_share: 1,
+    hops: 1,
+    vocabulary: 1,
+    unassigned: 1
   }
   def weights, do: @weights
 
@@ -51,7 +58,8 @@ defmodule AlaLint.Rules do
     :tramp,
     :public_surface,
     :r1_ref,
-    :subscribe
+    :subscribe,
+    :ports
   ]
   def advisory_rules, do: @advisory_rules
 
@@ -73,7 +81,14 @@ defmodule AlaLint.Rules do
     module_avg: :warn,
     app_share: :warn,
     public_surface: :warn,
-    r10_aggregate: :warn
+    r10_aggregate: :warn,
+    ports: :warn,
+    ports_unwired: :warn,
+    wiring_closure: :warn,
+    r11_share: :info,
+    hops: :info,
+    vocabulary: :info,
+    unassigned: :warn
   }
   def default_severity(rule), do: Map.get(@severity, rule, :error)
 
@@ -96,6 +111,11 @@ defmodule AlaLint.Rules do
 
   @doc "Run every rule; returns a flat list of findings."
   def run(model) do
+    findings = base_run(model) ++ AlaLint.LiveViewRules.run(model) ++ unassigned(model)
+    findings ++ AlaLint.LiveViewRules.logic_share(model, findings)
+  end
+
+  defp base_run(model) do
     r1(model) ++
       r1_reference(model) ++
       subscribe(model) ++
@@ -226,6 +246,25 @@ defmodule AlaLint.Rules do
 
   def r10(_model), do: []
 
+  # ── Unassigned: a module the layer map doesn't place. Every layer-aware check
+  # (R1 altitude, R3, R10, R11, the LiveView checks) skips it, so the score
+  # silently covers less of the codebase. Reported loudly at every tier; scored
+  # only when enforced (`--enforce unassigned`), and `--require-layers` fails CI. ──
+  def unassigned(%{layers: %{index: idx}} = model) do
+    for m <- model.modules, idx[m.name] == nil do
+      f(
+        :unassigned,
+        m.name,
+        model,
+        m,
+        m.line,
+        "#{m.name} matches no layer (#{length(m.functions)} functions) — R1 altitude, R3, R10, R11 and the LiveView checks skip it; add it to a layer in the layer map, rename it to fit a layer's pattern, or tag functions with @ala_layer"
+      )
+    end
+  end
+
+  def unassigned(_model), do: []
+
   # ── R10 (aggregate) — a shared *domain* aggregate. Only runs when
   # `check_aggregates` is on (strict/super-strict). Where R10 flags a
   # feature-tier entity shared across peers, this flags a struct in a *shareable*
@@ -237,6 +276,7 @@ defmodule AlaLint.Rules do
       ) do
     for m <- model.modules,
         m.defines_struct,
+        not configured_instance?(m),
         si = idx[m.name],
         si != nil,
         units_sharing = entity_sharers(m, model, idx, peer_ok, units, &(&1 < si)),
@@ -255,6 +295,24 @@ defmodule AlaLint.Rules do
   end
 
   def r10_aggregate(_model), do: []
+
+  # A struct its own functions take as configuration (`call(%__MODULE__{} = c, x)`)
+  # and never update is configuration built once and handed down (a rate table,
+  # a stock rule), not entity data features share.
+  defp configured_instance?(m) do
+    Enum.any?(m.functions, &(not &1.private and configured_rule?(&1))) and
+      not Enum.any?(m.functions, fn fun ->
+      {_, updates?} =
+        Macro.prewalk(fun.body, false, fn
+          {:%{}, _, [{:|, _, _}]} = n, _ -> {n, true}
+          {:%, _, [_, {:%{}, _, [{:|, _, _}]}]} = n, _ -> {n, true}
+          {:struct, _, [_, _]} = n, _ -> {n, true}
+          n, acc -> {n, acc}
+        end)
+
+      updates?
+    end)
+  end
 
   # Distinct *units* (a feature and its own submodules count once) of
   # peer-forbidden layers selected by `layer?` that reference the struct module,
@@ -1220,6 +1278,7 @@ defmodule AlaLint.Rules do
           length(publics) > 1,
           fun <- publics,
           not predicate_name?(fun),
+          not configured_rule?(fun),
           primitive_wrapper?(fun) do
         f(
           :r6,
@@ -1251,6 +1310,15 @@ defmodule AlaLint.Rules do
        do: terminal_operand?(a) and terminal_operand?(b)
 
   defp primitive_wrapper?(_), do: false
+
+  # `call(%__MODULE__{unit: u}, n), do: n * u` applies the rule an instance was
+  # configured with: the configuration is the abstraction, not the operator.
+  defp configured_rule?(%{params: [first | _]}), do: struct_pattern?(first)
+  defp configured_rule?(_), do: false
+
+  defp struct_pattern?({:%, _, _}), do: true
+  defp struct_pattern?({:=, _, [a, b]}), do: struct_pattern?(a) or struct_pattern?(b)
+  defp struct_pattern?(_), do: false
 
   # `pending?/1` over a private field is encapsulation, not a rename of `!=`.
   defp predicate_name?(%{name: name}), do: String.ends_with?(Atom.to_string(name), "?")
