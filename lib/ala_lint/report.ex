@@ -51,6 +51,8 @@ defmodule AlaLint.Report do
       layer_dirs: layer_dir_cohesion(model),
       params: Map.get(model, :params, %{}),
       functions: model.function_total,
+      # one per {module, name, arity}; `functions` counts each clause, the unit the metrics below use
+      distinct_functions: distinct_functions(model),
       loc: model.loc_total,
       modules: length(model.modules),
       weighted: weighted,
@@ -138,6 +140,11 @@ defmodule AlaLint.Report do
       met: met,
       met_strictly: strict
     }
+  end
+
+  defp distinct_functions(model) do
+    for(m <- model.modules, f <- m.functions, into: MapSet.new(), do: {m.name, f.name, f.arity})
+    |> MapSet.size()
   end
 
   # Map each finding to the function whose def-line is the greatest ≤ the
@@ -250,7 +257,7 @@ defmodule AlaLint.Report do
       unassigned_banner(report) <>
         """
         ── ALA Checklist (R1–R11) ─────────────────────────────────────────────
-        modules: #{report.modules}   functions: #{report.functions}   LOC: #{report.loc}
+        modules: #{report.modules}   functions: #{report.distinct_functions} (#{report.functions} clauses)   LOC: #{report.loc}
         abstraction height: #{report.height} call-levels (function graph)#{height_note}
         #{coverage_line(report.layer_coverage)}
         #{cohesion_lines(report.layer_dirs)}
@@ -264,7 +271,7 @@ defmodule AlaLint.Report do
           violation load per 100 functions: #{report.per_100_functions}  (can exceed 100 — multi-counts)
           per 1000 LOC:        #{report.per_1000_loc}
 
-        Count of compliant functions: #{report.compliant_functions} / #{report.functions}  (#{report.breadth_score}% → grade #{report.breadth_grade})
+        Count of compliant function clauses: #{report.compliant_functions} / #{report.functions}  (#{report.breadth_score}% → grade #{report.breadth_grade})
           — functions with zero violations; each function counted once (bounded, not draggable).
           functions with ≥1 violation: #{report.offending_functions} (#{report.functions_with_violation_per_100} per 100)
           module-level findings (R1/R5/attrs, no owning function): #{report.module_level_findings}

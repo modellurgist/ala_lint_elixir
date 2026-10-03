@@ -592,3 +592,25 @@ defmodule AlaLint.ConstructionIsNotReadingTest do
     refute msg =~ "Builder"
   end
 end
+
+defmodule AlaLint.DistinctFunctionsTest do
+  use ExUnit.Case, async: true
+
+  test "the report counts functions once per name and arity, and clauses separately" do
+    dir = Path.join(System.tmp_dir!(), "ala_lint_distinct_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+
+    File.write!(Path.join(dir, "a.ex"), ~S'''
+    defmodule App.A do
+      def f(:x), do: 1
+      def f(:y), do: 2
+      def f(_), do: 3
+      def g(a, b), do: {a, b}
+    end
+    ''')
+
+    r = AlaLint.analyze(dir)
+    assert {r.distinct_functions, r.functions} == {2, 4}
+    assert AlaLint.Report.to_text(r) =~ "functions: 2 (4 clauses)"
+  end
+end

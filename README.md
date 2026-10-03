@@ -290,8 +290,10 @@ compliant  = functions − offending         # functions with ZERO violations (a
 compliant% = clamp(100 − offending/functions×100, 0, 100)   # 0–100, higher = cleaner
 ```
 
-This counts each **function** at most once, so it can't be inflated by one function accruing many
-findings. Findings that belong to no function — R1 cycles, R5 duplicated literals, and magic
+This counts each **function clause** at most once, so it can't be inflated by one function accruing
+many findings. Both metrics use clauses (a five-clause `handle_event/3` is five), the unit findings
+attach to; the header also gives the distinct count, one per module, name and arity, which is the
+better number for comparing how finely two codebases are factored: `functions: 277 (392 clauses)`. Findings that belong to no function — R1 cycles, R5 duplicated literals, and magic
 literals in module attributes — are **module-level** and reported separately (not folded in).
 
 The two metrics answer different questions and are both reported (both: higher = cleaner):
@@ -307,9 +309,11 @@ the degree-of-compliance score (mean ≈64, σ ≈30), precisely because it does
 
 ## Example output
 
+An illustrative, abridged report for a small app:
+
 ```
 ── ALA Checklist (R1–R11) ─────────────────────────────────────────────
-modules: 24   functions: 399   LOC: 6183
+modules: 24   functions: 312 (399 clauses)   LOC: 6183
 abstraction height: 9 call-levels (function graph)  ⚠ exceeds max 5
 layer coverage: 303/399 functions assigned (76%)
   unassigned (worklist): App.Application, AppWeb.Telemetry, … +19 more
@@ -317,9 +321,13 @@ filesystem cohesion (advisory — Spray: dirs separate layers):
   feature    100% under `lib/app/features` (cohesive)
   domain      81% under `lib/app/domain` (scattered across 2 dirs)
 
+Checklist rules met: 9 of 10 checked (11 in the checklist; R8 is judgement)
+  with no finding at all, advisory included: 8 of 10
+  R1 NOT met (1)  R2 met  R3 met  R4 met  R5 met  R6 met  R7 met (1 advisory)  R8 unchecked  R9 met  R10 met  R11 met
+
 Degree of function compliance: 92/100  (grade A)
   weighted violations: 30   violation load per 100 functions: 7.5
-Count of compliant functions: 395 / 399  (99% → grade A)
+Count of compliant function clauses: 395 / 399  (99% → grade A)
 
 Findings (scored, most severe first):
   [r1] lib/app/features/cart.ex:18  Cart.peek/1 [feature] → Wish.look/1 [feature]: cross-peer edge …
