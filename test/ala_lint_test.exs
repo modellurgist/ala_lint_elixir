@@ -708,7 +708,7 @@ defmodule AlaLintTest do
     File.rm_rf!(dir)
   end
 
-  test "strict scores advisories; super-strict runs and scores the shared-aggregate check" do
+  test "the shared-aggregate check is scored from --strict up, and can be softened" do
     dir = Path.join(System.tmp_dir!(), "ala_strict_#{System.unique_integer([:positive])}")
     File.mkdir_p!(Path.join(dir, "features"))
 
@@ -729,24 +729,24 @@ defmodule AlaLintTest do
 
     layers = [
       {:feature, [~r/App\.Features\./], peer_ok: false, unit: ~r/(App\.Features\.[^.]+)/},
-      {:domain, [~r/App\.Domain\./], peer_ok: true}
+      {:domain, [~r/App\.Domain\./], peer_ok: true},
+      {:platform, [~r/App\.Platform\./], peer_ok: true}
     ]
 
     normal = AlaLint.analyze(dir, layers: layers)
     strict = AlaLint.analyze(dir, layers: layers, strict: true)
     sup = AlaLint.analyze(dir, layers: layers, super_strict: true)
 
-    # the shared domain aggregate is invisible normally and advisory under strict and super-strict:
-    # a shared domain abstraction is a design to read, not a defect to score
+    # the shared domain aggregate is invisible normally, and scored from --strict up: read strictly,
+    # it is Spray's shared entity (§6.17.2), and R10 is unmet
     refute Enum.any?(normal.findings, &(&1.rule == :r10_aggregate))
+    assert Enum.any?(strict.scored_findings, &(&1.rule == :r10_aggregate and &1.message =~ "Cart"))
+    assert Enum.any?(sup.scored_findings, &(&1.rule == :r10_aggregate))
+    assert strict.rules.by_rule.r10.state == :not_met
 
-    assert Enum.any?(
-             strict.advisory_findings,
-             &(&1.rule == :r10_aggregate and &1.message =~ "Cart")
-           )
-
-    assert Enum.any?(sup.advisory_findings, &(&1.rule == :r10_aggregate))
-    refute Enum.any?(sup.scored_findings, &(&1.rule == :r10_aggregate))
+    # a value type shared on purpose can be read as advisory again
+    soft = AlaLint.analyze(dir, layers: layers, strict: true, checks: %{r10_aggregate: :advisory})
+    refute Enum.any?(soft.scored_findings, &(&1.rule == :r10_aggregate))
   end
 
   test "R11 is advisory under strict, scored only under super-strict" do

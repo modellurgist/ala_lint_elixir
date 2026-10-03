@@ -64,8 +64,59 @@ defmodule AlaLint.Report do
       module_level_findings: module_level,
       functions_with_violation_per_100: Float.round(fdr, 2),
       breadth_score: breadth_score,
-      breadth_grade: grade(breadth_score)
+      breadth_grade: grade(breadth_score),
+      rules: rule_status(model, findings, scored)
     }
+  end
+
+  # Which checklist rule each check serves. The score is a density, so a few findings in a large
+  # codebase round away; counting the rules met shows them. R8 is judgement and has no check.
+  @checklist_rule %{
+    r1: :r1, r1_ref: :r1, subscribe: :r1, layer: :r1,
+    r2: :r2, r3: :r3, r4: :r4, r5: :r5,
+    r6: :r6, tramp: :r6, ui_io: :r6,
+    r7: :r7, module_size: :r7, passthrough: :r7, height: :r7, public_surface: :r7,
+    r9: :r9, ports: :r9,
+    r10: :r10, r10_aggregate: :r10,
+    r11: :r11, subcomponent: :r11
+  }
+  @checklist_rules [:r1, :r2, :r3, :r4, :r5, :r6, :r7, :r8, :r9, :r10, :r11]
+  # rules whose checks need a layer map to run at all
+  @needs_layers [:r11]
+
+  def checklist_rule(check), do: Map.get(@checklist_rule, check)
+
+  @doc """
+  Per checklist rule: `:met` (no scored finding at this tier), `:not_met`, or `:unchecked` (R8, or a
+  rule whose checks need a layer map), with the scored and advisory finding counts. `met_strictly`
+  counts the rules with no finding of any severity.
+  """
+  def rule_status(model, findings, scored) do
+    layered = match?(%{layers: %{index: _}}, model)
+    count = fn list -> Enum.frequencies_by(list, &checklist_rule(&1.rule)) end
+    scored_n = count.(scored)
+    all_n = count.(findings)
+
+    status =
+      for r <- @checklist_rules, into: %{} do
+        s = Map.get(scored_n, r, 0)
+        a = Map.get(all_n, r, 0) - s
+
+        state =
+          cond do
+            r == :r8 or (r in @needs_layers and not layered) -> :unchecked
+            s > 0 -> :not_met
+            true -> :met
+          end
+
+        {r, %{state: state, scored: s, advisory: a}}
+      end
+
+    checked = Enum.count(status, fn {_, v} -> v.state != :unchecked end)
+    met = Enum.count(status, fn {_, v} -> v.state == :met end)
+    strict = Enum.count(status, fn {_, v} -> v.state == :met and v.advisory == 0 end)
+
+    %{by_rule: status, total: length(@checklist_rules), checked: checked, met: met, met_strictly: strict}
   end
 
   # Map each finding to the function whose def-line is the greatest ≤ the
@@ -181,6 +232,8 @@ defmodule AlaLint.Report do
     #{coverage_line(report.layer_coverage)}
     #{cohesion_lines(report.layer_dirs)}
 
+    #{rules_met_lines(report.rules)}
+
     Degree of function compliance: #{report.score}/100  (grade #{report.grade})
       — 100 minus the weighted-violation load; counts findings (severity-weighted),
         so it can be dragged down by a few dense or data-heavy modules.
@@ -272,7 +325,7 @@ defmodule AlaLint.Report do
 
   defp fmt_list(nil), do: "(none)"
   defp fmt_list([]), do: "(none)"
-  defp fmt_list(list), do: Enum.join(list, ", ")
+  defp fmt_list(list), do: Enum.map_join(list, ", ", &if(is_binary(&1), do: &1, else: inspect(&1)))
 
   defp cohesion_lines(nil), do: ""
   defp cohesion_lines([]), do: ""
@@ -336,6 +389,29 @@ defmodule AlaLint.Report do
       "  #{String.pad_trailing(name, 26)} #{String.pad_leading(to_string(c), 4)}  (×#{w})"
     end
     |> Enum.join("\n")
+  end
+
+  @doc "The rules-met lines of the text report."
+  def rules_met_lines(%{by_rule: by_rule} = rules) do
+    marks =
+      Enum.map_join(@checklist_rules, "  ", fn r ->
+        v = by_rule[r]
+        name = r |> to_string() |> String.upcase()
+
+        case v.state do
+          :met when v.advisory > 0 -> "#{name} met (#{v.advisory} advisory)"
+          :met -> "#{name} met"
+          :not_met -> "#{name} NOT met (#{v.scored})"
+          :unchecked -> "#{name} unchecked"
+        end
+      end)
+
+    """
+    Checklist rules met: #{rules.met} of #{rules.checked} checked (#{rules.total} in the checklist; R8 is judgement)
+      with no finding at all, advisory included: #{rules.met_strictly} of #{rules.checked}
+      — a count, not a density: one finding in a large codebase still leaves its rule unmet.
+      #{marks}\
+    """
   end
 
   defp rel(nil), do: "?"

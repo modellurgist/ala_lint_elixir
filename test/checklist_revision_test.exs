@@ -6,7 +6,7 @@ defmodule ChecklistRevisionTest do
   # No peer_ok given anywhere: the defaults are under test.
   @layers [
     {:app, [~r/^App\.(Page|Live)/]},
-    {:feature, [~r/^App\.Features\./], unit: ~r/^(App\.Features\.[^.]+)/},
+    {:state, [~r/^App\.Features\./], unit: ~r/^(App\.Features\.[^.]+)/},
     {:domain, [~r/^App\.Domain\./]},
     {:paradigms, [~r/^App\.Paradigms\./]}
   ]
@@ -64,6 +64,7 @@ defmodule ChecklistRevisionTest do
     defmodule App.Features.Cart do
       @callback take(term) :: term
       def take(x), do: App.Domain.Money.new(x)
+      def total(%App.Domain.Money{amount: a}), do: a
     end
     defmodule App.Features.Ledger do
       def record(%App.Domain.Money{} = m), do: m

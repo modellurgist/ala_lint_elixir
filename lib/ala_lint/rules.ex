@@ -39,7 +39,9 @@ defmodule AlaLint.Rules do
     r11_share: 1,
     hops: 1,
     vocabulary: 1,
-    unassigned: 1
+    unassigned: 1,
+    ui_io: 1,
+    subcomponent: 1
   }
   def weights, do: @weights
 
@@ -47,8 +49,9 @@ defmodule AlaLint.Rules do
   # obtainable ones; R11 and public_surface are aspirational and promoted only by
   # `--super-strict` (see AlaLint.analyze). Not listed, so never promoted by a
   # tier (only by `--enforce`): app_share and module_avg (ratios that penalise an
-  # app for having many pages or small single-function abstractions) and
-  # r10_aggregate (a shared domain aggregate is a design, not a defect).
+  # app for having many pages or small single-function abstractions). Since
+  # 2026-10-03 r10_aggregate is scored by `--strict`: Spray's shared entity
+  # (§6.17.2) read strictly, a domain struct several features read.
   @advisory_rules [
     :r7,
     :r11,
@@ -59,7 +62,10 @@ defmodule AlaLint.Rules do
     :public_surface,
     :r1_ref,
     :subscribe,
-    :ports
+    :ports,
+    :ui_io,
+    :subcomponent,
+    :r10_aggregate
   ]
   def advisory_rules, do: @advisory_rules
 
@@ -88,7 +94,9 @@ defmodule AlaLint.Rules do
     r11_share: :info,
     hops: :info,
     vocabulary: :info,
-    unassigned: :warn
+    unassigned: :warn,
+    ui_io: :warn,
+    subcomponent: :warn
   }
   def default_severity(rule), do: Map.get(@severity, rule, :error)
 
@@ -251,7 +259,8 @@ defmodule AlaLint.Rules do
   # silently covers less of the codebase. Reported loudly at every tier; scored
   # only when enforced (`--enforce unassigned`), and `--require-layers` fails CI. ──
   def unassigned(%{layers: %{index: idx}} = model) do
-    for m <- model.modules, idx[m.name] == nil do
+    # a module with no functions (a namespace root holding only docs) has nothing to check
+    for m <- model.modules, idx[m.name] == nil, m.functions != [] do
       f(
         :unassigned,
         m.name,
@@ -272,13 +281,19 @@ defmodule AlaLint.Rules do
   # Clean's shared-Entity coupling? A human decides. Advisory; super-strict
   # scores it (via the enforce list). ───────────────────────────────────────
   def r10_aggregate(
-        %{check_aggregates: true, layers: %{index: idx, peer_ok: peer_ok, units: units}} = model
+        %{check_aggregates: true, layers: %{index: idx, peer_ok: peer_ok, units: units, names: names}} =
+          model
       ) do
+    # a bottom-layer struct is a paradigm's or the foundation's own shape (a runner's state, a
+    # schema), the convention its users know, not a domain aggregate peers share
+    bottom = length(names) - 1
+
     for m <- model.modules,
         m.defines_struct,
         not configured_instance?(m),
         si = idx[m.name],
         si != nil,
+        si < bottom,
         units_sharing = entity_sharers(m, model, idx, peer_ok, units, &(&1 < si)),
         MapSet.size(units_sharing) >= 2 do
       who = units_sharing |> Enum.map(&short/1) |> Enum.sort() |> Enum.join(", ")
@@ -289,7 +304,7 @@ defmodule AlaLint.Rules do
         model,
         m,
         m.line,
-        "domain aggregate #{short(m.name)} is read by #{MapSet.size(units_sharing)} features (#{who}) — a shared aggregate couples them; consider per-feature private data + an identity key (R10, strict)"
+        "domain aggregate #{short(m.name)} is read by #{MapSet.size(units_sharing)} features (#{who}) — a shared entity couples them (§6.17.2): send each reader only the data it needs (an id, the lines), and keep one use case's data out of a struct another shares (R10)"
       )
     end
   end
@@ -320,6 +335,9 @@ defmodule AlaLint.Rules do
   defp entity_sharers(struct_mod, model, idx, peer_ok, units, layer?) do
     for m <- model.modules,
         MapSet.member?(m.refs, struct_mod.name) or m.name == struct_mod.name,
+        # building an instance is configuration (a feature "creates instances of domain
+        # abstractions", Spray §2.2), not knowing its data
+        m.name == struct_mod.name or not only_constructs?(m, struct_mod.name),
         i = idx[m.name],
         i != nil,
         layer?.(i),
@@ -329,13 +347,44 @@ defmodule AlaLint.Rules do
     end
   end
 
+  # every reference `m` makes to `target` is a call to its `new`: no struct pattern, no other call
+  defp only_constructs?(m, target) do
+    uses =
+      Enum.flat_map(m.functions, fn fun ->
+        {_, found} =
+          # the head counts too: a struct matched in it is a read
+          Macro.prewalk({fun.params, fun.body}, [], fn
+            {{:., _, [{:__aliases__, _, parts}, name]}, _, _} = node, acc ->
+              {node, if(resolves_to?(m, parts, target), do: [name | acc], else: acc)}
+
+            {:%, _, [{:__aliases__, _, parts}, _]} = node, acc ->
+              {node, if(resolves_to?(m, parts, target), do: [:struct | acc], else: acc)}
+
+            node, acc ->
+              {node, acc}
+          end)
+
+        found
+      end)
+
+    uses != [] and Enum.all?(uses, &(&1 == :new))
+  end
+
+  defp resolves_to?(m, parts, target) do
+    [first | rest] = Enum.map(parts, &to_string/1)
+    full = Enum.join([Map.get(m.aliases, first, first) | rest], ".")
+    full == target or String.ends_with?(target, "." <> full) and full != ""
+  end
+
   # ── R11: the application (top) layer is composition only (advisory). Two
   # signals: the top layer is a large share of the code, and top-layer functions
   # branch beyond sequencing wiring. Both are relaxations for source-encoded
   # app layers, so they are reported, not scored. Needs a layer map. ─────────
-  def r11(%{layers: %{fun_index: fi, app_layers: app}} = model) do
+  def r11(%{layers: %{fun_index: fi, app_layers: app} = layers} = model) do
     total = max(map_size(fi), 1)
     app_ids = for {id, i} <- fi, MapSet.member?(app, i), do: id
+    composing = Map.get(layers, :composition_layers, app)
+    composing_ids = for {id, i} <- fi, MapSet.member?(composing, i), do: id
     share = length(app_ids) / total
     max_share = Map.get(model, :max_app_share, 0.20)
 
@@ -357,7 +406,7 @@ defmodule AlaLint.Rules do
     # the {module,name,arity} index — a `handle/3` whose 3rd clause branches must
     # be flagged even if the last clause is straight wiring. One finding per
     # function, anchored at its first branchy clause.
-    app_id_set = MapSet.new(app_ids)
+    app_id_set = MapSet.new(composing_ids)
 
     branches =
       for m <- model.modules,
@@ -378,7 +427,7 @@ defmodule AlaLint.Rules do
           model,
           m,
           branchy.line,
-          "#{short(m.name)}.#{name}/#{arity} branches in the application layer (#{kinds}) — a real finding, not cleared by being advisory: move guards into the connection mechanism (with, a runner), rules into configured abstractions or a state machine; keep only routing (R11)"
+          "#{short(m.name)}.#{name}/#{arity} branches in #{composing_layer(model, m.name)} (#{kinds}) — a real finding, not cleared by being advisory: move guards into the connection mechanism (with, a runner), rules into configured abstractions or a state machine; keep only routing (R11)"
         )
       end
 
@@ -394,7 +443,7 @@ defmodule AlaLint.Rules do
           model,
           m,
           computing.line,
-          "#{short(m.name)}.#{name}/#{arity} does arithmetic in the application layer — data handling belongs in a feature or domain abstraction; the application assigns its output (R11)"
+          "#{short(m.name)}.#{name}/#{arity} does arithmetic in #{composing_layer(model, m.name)} — data handling belongs in a domain abstraction; the composition assigns its output (R11)"
         )
       end
 
@@ -410,7 +459,7 @@ defmodule AlaLint.Rules do
           model,
           m,
           looping.line,
-          "#{short(m.name)}.#{name}/#{arity} iterates in the application layer (a `for` comprehension) — Spray's \"for loop\" (§1.6.3): move the loop into a domain abstraction or a generic component (R11)"
+          "#{short(m.name)}.#{name}/#{arity} iterates in #{composing_layer(model, m.name)} (a `for` comprehension) — Spray's \"for loop\" (§1.6.3): move the loop into a domain abstraction or a generic component (R11)"
         )
       end
 
@@ -423,6 +472,15 @@ defmodule AlaLint.Rules do
   end
 
   def r11(_model), do: []
+
+  # where a composition finding sits; a feature that holds logic is told what Spray's features hold
+  defp composing_layer(%{layers: %{index: idx, app_layers: app}}, name) do
+    if MapSet.member?(app, idx[name]),
+      do: "the application layer",
+      else:
+        "a Features layer, which holds only instances, configuration and wiring (§2.2; a coded abstraction belongs in a domain layer)"
+  end
+
 
   defp iterates?(body) do
     {_, found} =
@@ -530,6 +588,10 @@ defmodule AlaLint.Rules do
   defp bound_from_lower(body, m, model, lower) do
     {_, found} =
       Macro.prewalk(body, [], fn
+        # naming a built instance so it can be wired twice is configuration (Spray §1.6.6, §3.6.2)
+        {:=, _, [_pat, {{:., _, [_, :new]}, _, _}]} = node, acc ->
+          {node, acc}
+
         {:=, _, [pat, rhs]} = node, acc ->
           case remote_target(rhs, m, model) do
             nil ->
@@ -956,7 +1018,10 @@ defmodule AlaLint.Rules do
   defp single_call_body?({:|>, _, [left, {name, _, args}]}) when is_atom(name) and is_list(args),
     do: bare_operand?(left)
 
-  defp single_call_body?({{:., _, _}, _, args}) when is_list(args), do: true
+  # an argument the function computes first (a lookup, a conversion) makes it an adapter, the
+  # same reading as a pipe whose left is a call
+  defp single_call_body?({{:., _, _}, _, args}) when is_list(args),
+    do: not Enum.any?(args, &computed_arg?/1)
   # A map/struct update or construction, or a tuple, builds a value; a call
   # embedded in one of its fields is a computation, not a delegating rename
   # (`%{s | field: Callee.f(...)}`, `%Struct{...}`, `{a, Callee.f(x)}`).
@@ -969,6 +1034,9 @@ defmodule AlaLint.Rules do
        do: true
 
   defp single_call_body?(_), do: false
+
+  defp computed_arg?({{:., _, [_, _]}, meta, _}), do: not Keyword.get(meta, :no_parens, false)
+  defp computed_arg?(_), do: false
 
   # A variable or a literal — not a call, not a struct/map/tuple construction.
   defp bare_operand?({name, _, ctx}) when is_atom(name) and is_atom(ctx), do: true

@@ -38,9 +38,14 @@ defmodule AlaLint.CLI do
     r1_ref         reference-level R1 (templates, aliases)
     subscribe      a module subscribing itself to a topic it fixes (R1/R5)
     ports          a feature's ports/0 declaration drifting from the outputs it builds
+    ui_io          a UI component below the composition that loads or saves (R6, §5.2.2)
+    subcomponent   a LiveComponent inside the application or a Features layer: a contained
+                   sub-component (R11, §2.2)
+    r10_aggregate  a domain struct several features read: Spray's shared entity (R10, §6.17.2)
 
   ASPIRATIONAL  (reported by default; scored only under --super-strict)
-    r11            no logic at the top: branches (guard/logic; `with`,
+    r11            no logic in a composition layer (the application, and a Features layer,
+                   which holds only instances, configuration and wiring, §2.2): branches (guard/logic; `with`,
                    ok/error routing and `connected?` exempt), arithmetic,
                    handling data between abstractions, working chains,
                    logic in application templates, assigns handed to a
@@ -50,7 +55,6 @@ defmodule AlaLint.CLI do
   REPORTED ONLY  (never scored by a tier; --enforce CHECK to score one)
     app_share      application-layer share of functions --set app_share.max=F (default 0.20)
     module_avg     files averaging under N lines         --set module_size.min_avg=N (default 100)
-    r10_aggregate  shared domain aggregate (under --strict and above)
     unassigned     a module matching no layer: the layer-aware checks skip it (loud warning;
                    --require-layers fails the run)
     ports_unwired  a declared output no composer names (a prompt for a coverage test)

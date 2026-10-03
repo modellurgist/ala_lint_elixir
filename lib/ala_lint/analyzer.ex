@@ -321,10 +321,18 @@ defmodule AlaLint.Analyzer do
 
   # `use SomeMacro` — record the used module as a content signal (a layer map
   # can match on it, e.g. `uses: [~r/Ecto\\.Schema/]` → persistence).
-  defp walk({:use, _, [{:__aliases__, _, parts} | _]} = node, st, _k) when st.current != nil do
+  defp walk({:use, _, [{:__aliases__, _, parts} | rest]} = node, st, _k) when st.current != nil do
+    # `use AppWeb, :live_component` also records "AppWeb:live_component", so rules can tell a
+    # component from a page
+    kinds = for [kind | _] <- [rest], is_atom(kind), do: ":" <> Atom.to_string(kind)
+
     case alias_name(parts) do
-      nil -> {node, st}
-      name -> {node, update_mod(st, st.current, fn m -> %{m | uses: [name | m.uses]} end)}
+      nil ->
+        {node, st}
+
+      name ->
+        uses = [name | Enum.map(kinds, &(name <> &1))]
+        {node, update_mod(st, st.current, fn m -> %{m | uses: uses ++ m.uses} end)}
     end
   end
 

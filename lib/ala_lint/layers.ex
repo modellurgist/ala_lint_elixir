@@ -70,6 +70,8 @@ defmodule AlaLint.Layers do
   coverage gap, not a violation. A tag naming an undeclared layer is collected
   in `unknown_tags` (a validity error).
   """
+  @feature_names [:feature, :features, :user_story, :user_stories, :story, :stories]
+
   def resolve(modules, spec) do
     names = Enum.map(spec, fn t -> elem(t, 0) end)
     indexed = Enum.with_index(spec)
@@ -85,8 +87,6 @@ defmodule AlaLint.Layers do
     declared_config =
       for {t, i} <- indexed, layer_opt(t, :config, false), into: MapSet.new(), do: i
 
-    config_layers =
-      if MapSet.size(declared_config) == 0, do: MapSet.new([0]), else: declared_config
 
     # Application-layer tiers. Calls *within* the application don't add height,
     # because the application is one abstraction. `app: true` marks which layer
@@ -94,6 +94,21 @@ defmodule AlaLint.Layers do
     # shell → page → view sub-layers is the older model the checklist replaced.
     declared_app = for {t, i} <- indexed, layer_opt(t, :app, false), into: MapSet.new(), do: i
     app_layers = if MapSet.size(declared_app) == 0, do: MapSet.new([0]), else: declared_app
+
+    # Composition layers hold only instances, configuration and wiring, so R11 applies to them.
+    # Spray's Features layer is one: "Each feature creates instances of domain abstractions,
+    # configures the instances with feature specific details, and connects them together" (§2.2).
+    # A layer named for features is one unless it says `composition: false`.
+    composition_layers =
+      for {t, i} <- indexed,
+          layer_opt(t, :composition, elem(t, 0) in @feature_names),
+          into: app_layers,
+          do: i
+
+    # a feature configures its instances with "feature specific details" (§2.2), so by default
+    # application literals may sit in any composition layer
+    config_layers =
+      if MapSet.size(declared_config) == 0, do: composition_layers, else: declared_config
 
     index = for m <- modules, into: %{}, do: {m.name, first_match(m, spec)}
 
@@ -120,6 +135,7 @@ defmodule AlaLint.Layers do
       units: units,
       config_layers: config_layers,
       app_layers: app_layers,
+      composition_layers: composition_layers,
       index: index,
       fun_index: fun_index,
       unknown_tags: Enum.reverse(unknown),

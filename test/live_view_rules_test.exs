@@ -3,7 +3,7 @@ defmodule AlaLint.LiveViewRulesTest do
 
   @layers [
     {:app, [~r/^App\.Page/]},
-    {:feature, [~r/^App\.Features\./]},
+    {:state, [~r/^App\.Features\./]},
     {:domain, [~r/^App\.Domain\./]},
     {:platform, [~r/^App\.Store/, ~r/^App\.Binder/, ~r/^App\.Parts/]}
   ]
@@ -32,6 +32,7 @@ defmodule AlaLint.LiveViewRulesTest do
         ~H"""
         <div :if={@count == 0}>{Money.new(@price * @qty)}</div>
         <div :for={row <- @rows}>{Rule.call(row)}</div>
+        <.live_component module={Cart} id="c" init={Rule.new(2)} />
         <%= case @status do %>
         <% end %>
         <p :if={@flag} class={[@on && "on"]}>{@summary.total} Gift wrap ($2.99)</p>
@@ -106,6 +107,7 @@ defmodule AlaLint.LiveViewRulesTest do
     refute any?(r, :r11, "@flag")
     refute any?(r, :r11, "@summary.total")
     refute any?(r, :r11, "@on &&")
+    refute any?(r, :r11, "Rule.new")
   end
 
   test "words and codes below the composition are R3", %{r: r} do
@@ -161,5 +163,388 @@ defmodule AlaLint.UnassignedTest do
     refute Enum.any?(r.scored_findings, &(&1.rule == :unassigned))
     assert AlaLint.Report.to_text(r) =~ "!! WARNING: 1 module(s) (1 functions) match no layer"
     assert AlaLint.Report.unassigned_banner(AlaLint.analyze(dir)) == ""
+  end
+end
+
+defmodule AlaLint.UiIoTest do
+  use ExUnit.Case, async: true
+
+  @layers [
+    {:app, [~r/^App\.Page/]},
+    {:state, [~r/^App\.Features\./]},
+    {:platform, [~r/^App\.Store/, ~r/^App\.Repo/, ~r/^App\.Widgets/]}
+  ]
+
+  test "a UI component that loads or saves is flagged; one that renders what it's given isn't" do
+    dir = Path.join(System.tmp_dir!(), "ala_lint_uiio_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+
+    File.write!(Path.join(dir, "all.ex"), ~S'''
+    defmodule App.Repo do
+      def all(q), do: q
+    end
+
+    defmodule App.Store do
+      alias App.Repo
+      def list(id), do: Repo.all(id)
+    end
+
+    defmodule App.Features.Cart.Panel do
+      use Phoenix.LiveComponent
+      def update(%{store: store, id: id}, s), do: {:ok, Map.put(s, :rows, store.list(id))}
+      def handle_event("save", _, s), do: {:noreply, (s.assigns.store.save(s.assigns.rows); s)}
+      def render(assigns), do: assigns.row.name
+    end
+
+    defmodule App.Features.Saved.Panel do
+      use Phoenix.LiveComponent
+      def update(_, s), do: {:ok, Map.put(s, :rows, App.Store.list(1))}
+      def render(assigns), do: assigns
+    end
+
+    defmodule App.Widgets do
+      use Phoenix.Component
+      def row(assigns), do: assigns.row.product.name
+    end
+    ''')
+
+    r = AlaLint.analyze(dir, layers: @layers, strict: true)
+    msgs = for f <- r.findings, f.rule == :ui_io, do: {f.module, f.message}
+
+    assert Enum.any?(msgs, fn {m, msg} -> m == "App.Features.Cart.Panel" and msg =~ "store.list" and msg =~ "store.save" end)
+    assert Enum.any?(msgs, fn {m, msg} -> m == "App.Features.Saved.Panel" and msg =~ "Store.list" end)
+    refute Enum.any?(msgs, fn {m, _} -> m == "App.Widgets" end)
+    assert Enum.any?(r.scored_findings, &(&1.rule == :ui_io))
+  end
+end
+
+defmodule AlaLint.FeaturesAndSubcomponentsTest do
+  use ExUnit.Case, async: true
+
+  setup_all do
+    dir = Path.join(System.tmp_dir!(), "ala_lint_features_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+
+    File.write!(Path.join(dir, "all.ex"), ~S'''
+    defmodule App.Page do
+      def mount(_, _, s), do: s
+    end
+
+    defmodule App.Page.FormComponent do
+      use Phoenix.LiveComponent
+      def handle_event("save", p, s), do: {:noreply, Map.put(s, :p, p)}
+    end
+
+    defmodule App.Stories.UndoRemoval do
+      def wire(s, :undo, {:captured, item}), do: App.Steps.start_timer(s, :undo, item, 5000)
+    end
+
+    defmodule App.Stories.Coded do
+      def total(lines), do: if(lines == [], do: 0, else: length(lines) * 2)
+    end
+
+    defmodule App.Widgets.RecordForm do
+      use Phoenix.LiveComponent
+      def handle_event("submit", p, s), do: {:noreply, Map.put(s, :draft, p)}
+    end
+
+    defmodule App.Steps do
+      def start_timer(s, _k, _i, _ms), do: s
+    end
+    ''')
+
+    layers = [
+      {:app, [~r/^App\.Page/]},
+      {:feature, [~r/^App\.Stories\./]},
+      {:domain, [~r/^App\.Widgets\./]},
+      {:platform, [~r/^App\.Steps/]}
+    ]
+
+    {:ok, r: AlaLint.analyze(dir, layers: layers, super_strict: true)}
+  end
+
+  defp on(r, rule, mod), do: Enum.filter(r.findings, &(&1.rule == rule and &1.module == mod))
+
+  test "a LiveComponent inside the application is a contained sub-component", %{r: r} do
+    assert [f] = on(r, :subcomponent, "App.Page.FormComponent")
+    assert f.message =~ "§2.2"
+    assert on(r, :subcomponent, "App.Widgets.RecordForm") == []
+    assert Enum.any?(r.scored_findings, &(&1.rule == :subcomponent))
+  end
+
+  test "a Features layer is composition: wiring passes, coded logic is R11", %{r: r} do
+    assert on(r, :r11, "App.Stories.UndoRemoval") == []
+    assert Enum.any?(on(r, :r11, "App.Stories.Coded"), &(&1.message =~ "a Features layer, which holds only instances, configuration and wiring"))
+  end
+
+  test "a feature may hold its configuration literals", %{r: r} do
+    assert on(r, :r3, "App.Stories.UndoRemoval") == []
+  end
+
+  test "a layer named for features can opt out" do
+    m = AlaLint.Layers.resolve([], [{:app, []}, {:feature, [], composition: false}, {:domain, []}])
+    assert MapSet.to_list(m.composition_layers) == [0]
+  end
+end
+
+defmodule AlaLint.RulesMetTest do
+  use ExUnit.Case, async: true
+
+  test "the report counts the checklist rules met, so one finding can't round away" do
+    dir = Path.join(System.tmp_dir!(), "ala_lint_rules_met_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+
+    File.write!(Path.join(dir, "all.ex"), ~S'''
+    defmodule App.Page do
+      def mount(_, _, s), do: s
+    end
+
+    defmodule App.Page.FormComponent do
+      use Phoenix.LiveComponent
+      def update(a, s), do: {:ok, Map.merge(s, a)}
+    end
+    ''')
+
+    layered = AlaLint.analyze(dir, layers: [{:app, [~r/^App\.Page/]}, {:domain, [~r/^App\.Domain/]}], strict: true)
+    assert %{checked: 10, total: 11, by_rule: %{r11: %{state: :not_met, scored: 1}, r8: %{state: :unchecked}}} = layered.rules
+    assert layered.rules.met == 9
+    assert AlaLint.Report.to_text(layered) =~ "Checklist rules met: 9 of 10 checked"
+
+    plain = AlaLint.analyze(dir)
+    assert plain.rules.by_rule.r11.state == :unchecked
+    assert plain.rules.checked == 9
+  end
+end
+
+defmodule AlaLint.StoryCompositionTest do
+  use ExUnit.Case, async: true
+
+  setup_all do
+    dir = Path.join(System.tmp_dir!(), "ala_lint_story_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+
+    File.write!(Path.join(dir, "all.ex"), ~S'''
+    defmodule App.Page do
+      def mount(_, _, s) do
+        rule = App.Domain.Rule.new(2)
+        s |> App.Story.input(:a, :mounted, App.Stories.A.new(rule: rule)) |> App.Story.input(:b, :x, rule)
+      end
+
+      defp open(s, id), do: App.Story.feed(s, :a, &App.Domain.Rule.call/2, &App.Store.get/1, id)
+      def handle_params(%{"id" => id}, _, s), do: {:noreply, open(s, id)}
+    end
+
+    defmodule App.Stories.A do
+      def parts, do: %{rule: App.Domain.Rule}
+      def ports, do: %{in: [mounted: :event], out: [done: :item, never: :item]}
+      def new(opts), do: App.Story.new(__MODULE__, %{}, view: [shown: false, count: 0], opts: opts)
+      def wire(s, me, :rule, {:x, item}), do: s |> App.Story.show(me, :shown, true) |> App.Story.send_out(me, :done, item)
+    end
+
+    defmodule App.Domain.Rule do
+      defstruct n: 0
+      def new(n), do: %__MODULE__{n: n}
+      def call(%__MODULE__{n: n}, x), do: {n, x}
+    end
+
+    defmodule App.Story do
+      def new(m, p, o), do: {m, p, o}
+      def input(s, _, _, _), do: s
+      def feed(s, _, _, _, _), do: s
+      def show(s, _, _, _), do: s
+      def send_out(s, _, _, _), do: s
+    end
+
+    defmodule App.Store do
+      def get(id), do: id
+    end
+    ''')
+
+    layers = [
+      {:app, [~r/^App\.Page/]},
+      {:feature, [~r/^App\.Stories\./]},
+      {:domain, [~r/^App\.Domain\./]},
+      {:platform, [~r/^App\.Story$/, ~r/^App\.Store$/]}
+    ]
+
+    {:ok, r: AlaLint.analyze(dir, layers: layers, super_strict: true)}
+  end
+
+  defp msgs(r, rule, mod), do: for(f <- r.findings, f.rule == rule, f.module == mod, do: f.message)
+
+  test "naming a built instance to wire it twice isn't handling data", %{r: r} do
+    refute Enum.any?(msgs(r, :r11, "App.Page"), &(&1 =~ "binds `rule`"))
+  end
+
+  test "a capture handed to a runner isn't store work in a helper", %{r: r} do
+    refute Enum.any?(msgs(r, :r11, "App.Page"), &(&1 =~ "page helper doing store work"))
+  end
+
+  test "a story's outputs are its send_out ports, not its configuration lists", %{r: r} do
+    ports = msgs(r, :ports, "App.Stories.A")
+    refute Enum.any?(ports, &(&1 =~ "`shown`" or &1 =~ "`count`" or &1 =~ "`done`"))
+    assert Enum.any?(ports, &(&1 =~ "declares output `never` but never emits it"))
+  end
+end
+
+defmodule AlaLint.AdapterNotPassthroughTest do
+  use ExUnit.Case, async: true
+
+  test "a call that computes one of its arguments first is an adapter, not a rename" do
+    dir = Path.join(System.tmp_dir!(), "ala_lint_adapter_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+
+    File.write!(Path.join(dir, "all.ex"), ~S'''
+    defmodule App.A do
+      def go(s, k), do: App.B.start(s, k)
+      def go_configured(s, k), do: App.B.start(s, Map.fetch!(s.timers, k))
+    end
+
+    defmodule App.B do
+      def start(s, _k), do: s
+    end
+
+    defmodule App.C do
+      def use_a(s), do: App.A.go(s, :x)
+      def use_b(s), do: App.A.go_configured(s, :x)
+    end
+    ''')
+
+    r = AlaLint.analyze(dir)
+    names = for f <- r.findings, f.rule == :passthrough, do: f.message
+    assert Enum.any?(names, &(&1 =~ "A.go/2"))
+    refute Enum.any?(names, &(&1 =~ "go_configured"))
+  end
+end
+
+defmodule AlaLint.NoComposerPortsTest do
+  use ExUnit.Case, async: true
+
+  test "a module that declares ports and has no composer doesn't crash the ports check" do
+    dir = Path.join(System.tmp_dir!(), "ala_lint_nocomposer_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+
+    File.write!(Path.join(dir, "a.ex"), ~S'''
+    defmodule App.Page do
+      def ports, do: %{in: [], out: [edit: :id]}
+      def go(s), do: {s, [edit: 1]}
+    end
+    ''')
+
+    r = AlaLint.analyze(dir, layers: [{:app, [~r/^App\.Page/]}, {:platform, [~r/^App\.X/]}], strict: true)
+    refute Enum.any?(r.findings, &(&1.rule == :ports_unwired))
+  end
+end
+
+defmodule AlaLint.BindingOutAndParadigmTextTest do
+  use ExUnit.Case, async: true
+
+  test "an {:out, port} binding is a sent output; a paradigm's own interpolated text isn't product words" do
+    dir = Path.join(System.tmp_dir!(), "ala_lint_out_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+
+    File.write!(Path.join(dir, "a.ex"), ~S'''
+    defmodule App.Stories.S do
+      def parts, do: %{}
+      def ports, do: %{in: [], out: [done: :item, never: :item]}
+      def bindings, do: %{{:part, :x} => [{:out, :done}]}
+    end
+
+    defmodule App.Domain.Rule do
+      def label(n), do: "free over #{n} dollars"
+    end
+
+    defmodule App.Paradigms.Check do
+      def problem(t), do: "a stream takes rows, not #{t}"
+    end
+    ''')
+
+    layers = [{:feature, [~r/^App\.Stories\./]}, {:domain, [~r/^App\.Domain\./]}, {:platform, [~r/^App\.Paradigms\./]}]
+    r = AlaLint.analyze(dir, layers: layers, strict: true)
+    ports = for f <- r.findings, f.rule == :ports, do: f.message
+    assert Enum.any?(ports, &(&1 =~ "`never`"))
+    refute Enum.any?(ports, &(&1 =~ "`done`"))
+    r3 = for f <- r.findings, f.rule == :r3, do: f.module
+    assert "App.Domain.Rule" in r3
+    refute "App.Paradigms.Check" in r3
+  end
+end
+
+defmodule AlaLint.ThreeTupleWiringTest do
+  use ExUnit.Case, async: true
+
+  test "a page clause head {:instance, :port, payload} counts as wiring that port" do
+    dir = Path.join(System.tmp_dir!(), "ala_lint_3tuple_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+
+    File.write!(Path.join(dir, "cart.ex"), ~S'''
+    defmodule App.State.Cart do
+      def ports, do: %{in: [], out: [changed: :change, lost: :change]}
+      def go(c), do: {c, [changed: 1, lost: 2]}
+    end
+    ''')
+
+    File.write!(Path.join(dir, "page.ex"), ~S'''
+    defmodule App.Page do
+      alias App.State.Cart
+      def handle_info({:cart, :changed, _change}, s), do: Cart.go(s)
+    end
+    ''')
+
+    layers = [{:app, [~r/^App\.Page/]}, {:state, [~r/^App\.State\./]}, {:platform, [~r/^App\.X/]}]
+    r = AlaLint.analyze(dir, layers: layers)
+    [msg] = for f <- r.findings, f.rule == :ports_unwired, do: f.message
+    assert msg =~ "`lost`"
+    refute msg =~ "`changed`"
+  end
+end
+
+defmodule AlaLint.ConstructionIsNotReadingTest do
+  use ExUnit.Case, async: true
+
+  test "a module that only builds an aggregate isn't one of its readers" do
+    dir = Path.join(System.tmp_dir!(), "ala_lint_construct_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+
+    File.write!(Path.join(dir, "a.ex"), ~S'''
+    defmodule App.Domain.Cart do
+      defstruct [:id]
+      def new(id), do: %__MODULE__{id: id}
+      def id(%__MODULE__{id: id}), do: id
+      def rename(%__MODULE__{} = c, id), do: %{c | id: id}
+    end
+    ''')
+
+    File.write!(Path.join(dir, "b.ex"), ~S'''
+    defmodule App.State.Owner do
+      alias App.Domain.Cart
+      def go(%Cart{} = c), do: Cart.id(c)
+    end
+    ''')
+
+    File.write!(Path.join(dir, "c.ex"), ~S'''
+    defmodule App.Stories.Builder do
+      def new(id), do: App.Domain.Cart.new(id)
+    end
+    ''')
+
+    File.write!(Path.join(dir, "d.ex"), ~S'''
+    defmodule App.State.Reader do
+      alias App.Domain.Cart
+      def look(c), do: Cart.id(c)
+    end
+    ''')
+
+    layers = [
+      {:story, [~r/^App\.Stories\./], composition: false},
+      {:state, [~r/^App\.State\./], unit: ~r/^(App\.State\.[^.]+)/},
+      {:domain, [~r/^App\.Domain\./], peer_ok: true},
+      {:platform, [~r/^App\.X/]}
+    ]
+
+    r = AlaLint.analyze(dir, layers: layers, strict: true)
+    [msg] = for f <- r.findings, f.rule == :r10_aggregate, do: f.message
+    assert msg =~ "Owner" and msg =~ "Reader"
+    refute msg =~ "Builder"
   end
 end

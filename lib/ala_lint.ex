@@ -40,9 +40,9 @@ defmodule AlaLint do
     # strict promotes the *obtainable* advisory rules to scored (R7, module-size, tramp,
     # height, pass-through, reference-level R1, subscribe). R11 ("no logic at the
     # top") and public-surface are aspirational purity, scored only under
-    # super-strict. The app-layer share, the average module size and the
-    # shared-domain-aggregate check are reported at every tier and scored by no
-    # tier: `checks: %{rule => :scored}` or `--enforce` promotes one rule.
+    # super-strict. The shared-domain-aggregate check (R10) is scored from --strict
+    # up. The app-layer share and the average module size are reported at every
+    # tier and scored by none: `checks: %{rule => :scored}` or `--enforce` promotes one.
     super_strict_only = [:r11, :public_surface]
 
     enforce =
@@ -60,6 +60,8 @@ defmodule AlaLint do
       end
       |> Kernel.++(checks.scored)
       |> Enum.uniq()
+      # a check the caller set to :advisory stays reported, whatever the tier promotes
+      |> Kernel.--(soft)
 
     check_aggregates = strict or super_strict or Keyword.get(opts, :check_aggregates, false)
 
