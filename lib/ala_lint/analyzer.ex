@@ -180,12 +180,17 @@ defmodule AlaLint.Analyzer do
 
     # a file's first module owns its colocated template, not modules nested in it
     first_in_file =
-      mods |> Enum.group_by(& &1.file) |> Map.new(fn {f, ms} -> {f, Enum.min_by(ms, & &1.line).name} end)
+      mods
+      |> Enum.group_by(& &1.file)
+      |> Map.new(fn {f, ms} -> {f, Enum.min_by(ms, & &1.line).name} end)
 
     Enum.map(mods, fn m ->
       case first_in_file[m.file] == m.name && Map.get(by_file, m.file) do
-        files when is_list(files) -> %{m | templates: m.templates ++ Enum.map(files, &{1, File.read!(&1)})}
-        _ -> m
+        files when is_list(files) ->
+          %{m | templates: m.templates ++ Enum.map(files, &{1, File.read!(&1)})}
+
+        _ ->
+          m
       end
     end)
   end

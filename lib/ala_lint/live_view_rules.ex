@@ -53,7 +53,12 @@ defmodule AlaLint.LiveViewRules do
       []
     else
       flagged =
-        for f <- findings, f.rule == :r11, owner = owner_of(model, f), owner != nil, into: MapSet.new(), do: owner
+        for f <- findings,
+            f.rule == :r11,
+            owner = owner_of(model, f),
+            owner != nil,
+            into: MapSet.new(),
+            do: owner
 
       pct = round(MapSet.size(flagged) / length(app_funs) * 100)
 
@@ -126,11 +131,21 @@ defmodule AlaLint.LiveViewRules do
   defp ast_reason(model, m, ast) do
     {_, reasons} =
       Macro.prewalk(ast, [], fn
-        {sigil, _, _}, acc when sigil in [:sigil_p, :sigil_P] -> {nil, acc}
-        {:&, _, [{:/, _, [_, arity]}]}, acc when is_integer(arity) -> {nil, acc}
-        {op, _, [_, _]} = node, acc when op in @comparisons -> {node, ["compares (`#{op}`)" | acc]}
-        {op, _, [_, _]} = node, acc when op in @arithmetic -> {node, ["computes (`#{op}`)" | acc]}
-        {kw, _, _} = node, acc when kw in @control -> {node, ["uses `#{kw}`" | acc]}
+        {sigil, _, _}, acc when sigil in [:sigil_p, :sigil_P] ->
+          {nil, acc}
+
+        {:&, _, [{:/, _, [_, arity]}]}, acc when is_integer(arity) ->
+          {nil, acc}
+
+        {op, _, [_, _]} = node, acc when op in @comparisons ->
+          {node, ["compares (`#{op}`)" | acc]}
+
+        {op, _, [_, _]} = node, acc when op in @arithmetic ->
+          {node, ["computes (`#{op}`)" | acc]}
+
+        {kw, _, _} = node, acc when kw in @control ->
+          {node, ["uses `#{kw}`" | acc]}
+
         # building an instance is composition, as in code (`R11` exempts a nested `new`)
         {{:., _, [{:__aliases__, _, _}, :new]}, _, _} = node, acc ->
           {node, acc}
@@ -154,7 +169,9 @@ defmodule AlaLint.LiveViewRules do
     full = Enum.join([Map.get(m.aliases, first, first) | rest], ".")
 
     target =
-      Enum.find(model.module_names, fn name -> name == full or String.ends_with?(name, "." <> full) end)
+      Enum.find(model.module_names, fn name ->
+        name == full or String.ends_with?(name, "." <> full)
+      end)
 
     if target && not app?(model, target), do: target
   end
@@ -165,10 +182,22 @@ defmodule AlaLint.LiveViewRules do
 
     markup =
       for m <- lower,
-          words = for({base, text} <- m.templates, {l, w} <- Template.words(text), do: {base + l - 1, w}),
+          words =
+            for(
+              {base, text} <- m.templates,
+              {l, w} <- Template.words(text),
+              do: {base + l - 1, w}
+            ),
           words != [] do
         {line, _} = hd(words)
-        shown = words |> Enum.map(&inspect(elem(&1, 1))) |> Enum.uniq() |> Enum.take(4) |> Enum.join(", ")
+
+        shown =
+          words
+          |> Enum.map(&inspect(elem(&1, 1)))
+          |> Enum.uniq()
+          |> Enum.take(4)
+          |> Enum.join(", ")
+
         more = if length(words) > 4, do: " (+#{length(words) - 4})", else: ""
 
         finding(
@@ -180,13 +209,19 @@ defmodule AlaLint.LiveViewRules do
         )
       end
 
+    # a paradigm's or the foundation's own text (a diagnostic, a diagram label) is about the
+    # paradigm, not the product, so interpolated sentences are only looked for above the bottom
     code =
-      # a paradigm's or the foundation's own text (a diagnostic, a diagram label) is about the
-      # paradigm, not the product, so interpolated sentences are only looked for above the bottom
       for m <- lower,
           fun <- m.functions,
           {line, what} <- code_words(fun.body, fun.line, not bottom?(model, m.name)) do
-        finding(:r3, m.name, m.file, line, "#{what} in #{short(m.name)} below the composition — the page should supply it (R3)")
+        finding(
+          :r3,
+          m.name,
+          m.file,
+          line,
+          "#{what} in #{short(m.name)} below the composition — the page should supply it (R3)"
+        )
       end
 
     markup ++ code
@@ -197,8 +232,12 @@ defmodule AlaLint.LiveViewRules do
   defp code_words(body, fun_line, sentences?) do
     {_, acc} =
       Macro.prewalk(body, [], fn
-        {:raise, _, _}, acc -> {nil, acc}
-        {{:., _, [{:__aliases__, _, [:Logger]}, _]}, _, _}, acc -> {nil, acc}
+        {:raise, _, _}, acc ->
+          {nil, acc}
+
+        {{:., _, [{:__aliases__, _, [:Logger]}, _]}, _, _}, acc ->
+          {nil, acc}
+
         {:message, msg} = node, acc when is_binary(msg) ->
           {node, [{fun_line, "validation message #{inspect(msg)}"} | acc]}
 
@@ -210,8 +249,14 @@ defmodule AlaLint.LiveViewRules do
 
           if sentences? and length(Regex.scan(~r/[A-Za-z]{2,}/, text)) >= 2 and
                Enum.any?(parts, &(not is_binary(&1))),
-            do: {node, [{meta[:line] || fun_line, "a sentence built by interpolation (#{inspect(String.trim(text))})"} | acc]},
-            else: {node, acc}
+             do:
+               {node,
+                [
+                  {meta[:line] || fun_line,
+                   "a sentence built by interpolation (#{inspect(String.trim(text))})"}
+                  | acc
+                ]},
+             else: {node, acc}
 
         node, acc ->
           {node, acc}
@@ -223,7 +268,12 @@ defmodule AlaLint.LiveViewRules do
   # ── R5: a label restating a configured amount ────────────────────────────
   def restated_amounts(model) do
     configured =
-      for m <- model.modules, {{:number, n}, _} <- m.literals, is_integer(n), n >= 10, into: MapSet.new(), do: n
+      for m <- model.modules,
+          {{:number, n}, _} <- m.literals,
+          is_integer(n),
+          n >= 10,
+          into: MapSet.new(),
+          do: n
 
     strings =
       for m <- model.modules,
@@ -265,16 +315,49 @@ defmodule AlaLint.LiveViewRules do
         undeclared = MapSet.difference(emitted, MapSet.new(outs)) |> Enum.sort()
         silent = MapSet.new(outs) |> MapSet.difference(built) |> Enum.sort()
         wired = wired_atoms(model, m, asts)
+
         unwired =
           if wired == :no_composer,
             do: [],
             else: outs |> Enum.reject(&MapSet.member?(wired, &1)) |> Enum.sort()
+
         _ = ins
 
         acc ++
-          for(p <- undeclared, do: finding(:ports, m.name, m.file, m.line, "#{short(m.name)} emits `#{p}` but `ports/0` doesn't declare it — the declaration has drifted from the code (R9, R8)")) ++
-          for(p <- silent, do: finding(:ports, m.name, m.file, m.line, "#{short(m.name)} declares output `#{p}` but never emits it (R7, R9)")) ++
-          if(wired == :no_composer or unwired == [], do: [], else: [finding(:ports_unwired, m.name, m.file, m.line, "no composer of #{short(m.name)} mentions output(s) #{Enum.map_join(unwired, ", ", &"`#{&1}`")} — possibly unwired; a coverage test should prove each is wired or deliberately ignored (R8, heuristic)")])
+          for(
+            p <- undeclared,
+            do:
+              finding(
+                :ports,
+                m.name,
+                m.file,
+                m.line,
+                "#{short(m.name)} emits `#{p}` but `ports/0` doesn't declare it — the declaration has drifted from the code (R9, R8)"
+              )
+          ) ++
+          for(
+            p <- silent,
+            do:
+              finding(
+                :ports,
+                m.name,
+                m.file,
+                m.line,
+                "#{short(m.name)} declares output `#{p}` but never emits it (R7, R9)"
+              )
+          ) ++
+          if(wired == :no_composer or unwired == [],
+            do: [],
+            else: [
+              finding(
+                :ports_unwired,
+                m.name,
+                m.file,
+                m.line,
+                "no composer of #{short(m.name)} mentions output(s) #{Enum.map_join(unwired, ", ", &"`#{&1}`")} — possibly unwired; a coverage test should prove each is wired or deliberately ignored (R8, heuristic)"
+              )
+            ]
+          )
     end
   end
 
@@ -304,7 +387,8 @@ defmodule AlaLint.LiveViewRules do
     end
   end
 
-  defp composition_with_parts?(m), do: Enum.any?(m.functions, &(&1.name == :parts and &1.arity == 0))
+  defp composition_with_parts?(m),
+    do: Enum.any?(m.functions, &(&1.name == :parts and &1.arity == 0))
 
   defp send_out?(name), do: String.starts_with?(to_string(name), "send_out")
 
@@ -367,7 +451,10 @@ defmodule AlaLint.LiveViewRules do
     composers =
       for c <- model.modules,
           c.name != feature.name,
-          Enum.any?(c.refs, &(&1 == feature.name or String.starts_with?(&1, feature.name <> "."))),
+          Enum.any?(
+            c.refs,
+            &(&1 == feature.name or String.starts_with?(&1, feature.name <> "."))
+          ),
           do: c
 
     if composers == [] do
@@ -377,12 +464,24 @@ defmodule AlaLint.LiveViewRules do
         acc ->
           {_, found} =
             Macro.prewalk(ast, acc, fn
-              {a, b} = node, s when is_atom(a) and is_atom(b) -> {node, MapSet.put(s, b)}
+              {a, b} = node, s when is_atom(a) and is_atom(b) ->
+                {node, MapSet.put(s, b)}
+
               # a clause head or message `{:instance, :port, payload}`
-              {:{}, _, [a, b | _]} = node, s when is_atom(a) and is_atom(b) -> {node, MapSet.put(s, b)}
-              {a, _} = node, s when is_atom(a) -> {node, MapSet.put(s, a)}
-              list, s when is_list(list) -> {list, Enum.reduce(list, s, fn x, s2 -> if is_atom(x), do: MapSet.put(s2, x), else: s2 end)}
-              node, s -> {node, s}
+              {:{}, _, [a, b | _]} = node, s when is_atom(a) and is_atom(b) ->
+                {node, MapSet.put(s, b)}
+
+              {a, _} = node, s when is_atom(a) ->
+                {node, MapSet.put(s, a)}
+
+              list, s when is_list(list) ->
+                {list,
+                 Enum.reduce(list, s, fn x, s2 ->
+                   if is_atom(x), do: MapSet.put(s2, x), else: s2
+                 end)}
+
+              node, s ->
+                {node, s}
             end)
 
           found
@@ -391,7 +490,10 @@ defmodule AlaLint.LiveViewRules do
   end
 
   defp file_ast(file) do
-    with {:ok, src} <- File.read(file), {:ok, ast} <- Code.string_to_quoted(src, emit_warnings: false), do: ast, else: (_ -> nil)
+    with {:ok, src} <- File.read(file),
+         {:ok, ast} <- Code.string_to_quoted(src, emit_warnings: false),
+         do: ast,
+         else: (_ -> nil)
   end
 
   # ── R11: page code handing data along ────────────────────────────────────
@@ -510,8 +612,13 @@ defmodule AlaLint.LiveViewRules do
 
         {{:., _, [{:__aliases__, _, parts}, name]}, _, _} = node, acc ->
           case project_target_any(model, m, parts) do
-            nil -> {node, acc}
-            t -> if idx[t] == bottom, do: {node, MapSet.put(acc, "#{short(t)}.#{name}")}, else: {node, acc}
+            nil ->
+              {node, acc}
+
+            t ->
+              if idx[t] == bottom,
+                do: {node, MapSet.put(acc, "#{short(t)}.#{name}")},
+                else: {node, acc}
           end
 
         node, acc ->
@@ -524,7 +631,10 @@ defmodule AlaLint.LiveViewRules do
   defp project_target_any(model, m, parts) do
     [first | rest] = Enum.map(parts, &to_string/1)
     full = Enum.join([Map.get(m.aliases, first, first) | rest], ".")
-    Enum.find(model.module_names, fn name -> name == full or String.ends_with?(name, "." <> full) end)
+
+    Enum.find(model.module_names, fn name ->
+      name == full or String.ends_with?(name, "." <> full)
+    end)
   end
 
   # ── R6: a UI abstraction doing I/O ───────────────────────────────────────
@@ -580,7 +690,10 @@ defmodule AlaLint.LiveViewRules do
 
   defp ui_module?(m),
     do:
-      Enum.any?(m.uses, &String.match?(&1, ~r/(LiveComponent|Phoenix\.Component|:live_component|:html)$/))
+      Enum.any?(
+        m.uses,
+        &String.match?(&1, ~r/(LiveComponent|Phoenix\.Component|:live_component|:html)$/)
+      )
 
   # modules that reach storage or messaging: those referencing a Repo or PubSub, configured I/O
   # abstractions (a struct whose functions call a module they were handed), and anything that
@@ -714,7 +827,9 @@ defmodule AlaLint.LiveViewRules do
   defp bottom?(%{layers: %{index: idx, names: names}}, name), do: idx[name] == length(names) - 1
 
   # a feature or domain module: in a known layer, neither the application nor the bottom
-  defp middle?(model, name), do: model.layers.index[name] != nil and not composes?(model, name) and not bottom?(model, name)
+  defp middle?(model, name),
+    do:
+      model.layers.index[name] != nil and not composes?(model, name) and not bottom?(model, name)
 
   defp lower?(model, name), do: model.layers.index[name] != nil and not composes?(model, name)
 

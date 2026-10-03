@@ -72,13 +72,28 @@ defmodule AlaLint.Report do
   # Which checklist rule each check serves. The score is a density, so a few findings in a large
   # codebase round away; counting the rules met shows them. R8 is judgement and has no check.
   @checklist_rule %{
-    r1: :r1, r1_ref: :r1, subscribe: :r1, layer: :r1,
-    r2: :r2, r3: :r3, r4: :r4, r5: :r5,
-    r6: :r6, tramp: :r6, ui_io: :r6,
-    r7: :r7, module_size: :r7, passthrough: :r7, height: :r7, public_surface: :r7,
-    r9: :r9, ports: :r9,
-    r10: :r10, r10_aggregate: :r10,
-    r11: :r11, subcomponent: :r11
+    r1: :r1,
+    r1_ref: :r1,
+    subscribe: :r1,
+    layer: :r1,
+    r2: :r2,
+    r3: :r3,
+    r4: :r4,
+    r5: :r5,
+    r6: :r6,
+    tramp: :r6,
+    ui_io: :r6,
+    r7: :r7,
+    module_size: :r7,
+    passthrough: :r7,
+    height: :r7,
+    public_surface: :r7,
+    r9: :r9,
+    ports: :r9,
+    r10: :r10,
+    r10_aggregate: :r10,
+    r11: :r11,
+    subcomponent: :r11
   }
   @checklist_rules [:r1, :r2, :r3, :r4, :r5, :r6, :r7, :r8, :r9, :r10, :r11]
   # rules whose checks need a layer map to run at all
@@ -116,7 +131,13 @@ defmodule AlaLint.Report do
     met = Enum.count(status, fn {_, v} -> v.state == :met end)
     strict = Enum.count(status, fn {_, v} -> v.state == :met and v.advisory == 0 end)
 
-    %{by_rule: status, total: length(@checklist_rules), checked: checked, met: met, met_strictly: strict}
+    %{
+      by_rule: status,
+      total: length(@checklist_rules),
+      checked: checked,
+      met: met,
+      met_strictly: strict
+    }
   end
 
   # Map each finding to the function whose def-line is the greatest ≤ the
@@ -225,30 +246,32 @@ defmodule AlaLint.Report do
     height_note =
       if report.height > max_h, do: "  ⚠ exceeds max #{max_h}", else: "  (max #{max_h})"
 
-    header = unassigned_banner(report) <> """
-    ── ALA Checklist (R1–R11) ─────────────────────────────────────────────
-    modules: #{report.modules}   functions: #{report.functions}   LOC: #{report.loc}
-    abstraction height: #{report.height} call-levels (function graph)#{height_note}
-    #{coverage_line(report.layer_coverage)}
-    #{cohesion_lines(report.layer_dirs)}
+    header =
+      unassigned_banner(report) <>
+        """
+        ── ALA Checklist (R1–R11) ─────────────────────────────────────────────
+        modules: #{report.modules}   functions: #{report.functions}   LOC: #{report.loc}
+        abstraction height: #{report.height} call-levels (function graph)#{height_note}
+        #{coverage_line(report.layer_coverage)}
+        #{cohesion_lines(report.layer_dirs)}
 
-    #{rules_met_lines(report.rules)}
+        #{rules_met_lines(report.rules)}
 
-    Degree of function compliance: #{report.score}/100  (grade #{report.grade})
-      — 100 minus the weighted-violation load; counts findings (severity-weighted),
-        so it can be dragged down by a few dense or data-heavy modules.
-      weighted violations: #{report.weighted}
-      violation load per 100 functions: #{report.per_100_functions}  (can exceed 100 — multi-counts)
-      per 1000 LOC:        #{report.per_1000_loc}
+        Degree of function compliance: #{report.score}/100  (grade #{report.grade})
+          — 100 minus the weighted-violation load; counts findings (severity-weighted),
+            so it can be dragged down by a few dense or data-heavy modules.
+          weighted violations: #{report.weighted}
+          violation load per 100 functions: #{report.per_100_functions}  (can exceed 100 — multi-counts)
+          per 1000 LOC:        #{report.per_1000_loc}
 
-    Count of compliant functions: #{report.compliant_functions} / #{report.functions}  (#{report.breadth_score}% → grade #{report.breadth_grade})
-      — functions with zero violations; each function counted once (bounded, not draggable).
-      functions with ≥1 violation: #{report.offending_functions} (#{report.functions_with_violation_per_100} per 100)
-      module-level findings (R1/R5/attrs, no owning function): #{report.module_level_findings}
+        Count of compliant functions: #{report.compliant_functions} / #{report.functions}  (#{report.breadth_score}% → grade #{report.breadth_grade})
+          — functions with zero violations; each function counted once (bounded, not draggable).
+          functions with ≥1 violation: #{report.offending_functions} (#{report.functions_with_violation_per_100} per 100)
+          module-level findings (R1/R5/attrs, no owning function): #{report.module_level_findings}
 
-    By rule (weight):
-    #{rule_lines(report)}
-    """
+        By rule (weight):
+        #{rule_lines(report)}
+        """
 
     scored = format_findings(report.scored_findings, limit)
     scored_more = more_line(report.scored_findings, limit)
@@ -325,7 +348,9 @@ defmodule AlaLint.Report do
 
   defp fmt_list(nil), do: "(none)"
   defp fmt_list([]), do: "(none)"
-  defp fmt_list(list), do: Enum.map_join(list, ", ", &if(is_binary(&1), do: &1, else: inspect(&1)))
+
+  defp fmt_list(list),
+    do: Enum.map_join(list, ", ", &if(is_binary(&1), do: &1, else: inspect(&1)))
 
   defp cohesion_lines(nil), do: ""
   defp cohesion_lines([]), do: ""

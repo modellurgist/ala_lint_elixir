@@ -281,7 +281,10 @@ defmodule AlaLint.Rules do
   # Clean's shared-Entity coupling? A human decides. Advisory; super-strict
   # scores it (via the enforce list). ───────────────────────────────────────
   def r10_aggregate(
-        %{check_aggregates: true, layers: %{index: idx, peer_ok: peer_ok, units: units, names: names}} =
+        %{
+          check_aggregates: true,
+          layers: %{index: idx, peer_ok: peer_ok, units: units, names: names}
+        } =
           model
       ) do
     # a bottom-layer struct is a paradigm's or the foundation's own shape (a runner's state, a
@@ -317,16 +320,16 @@ defmodule AlaLint.Rules do
   defp configured_instance?(m) do
     Enum.any?(m.functions, &(not &1.private and configured_rule?(&1))) and
       not Enum.any?(m.functions, fn fun ->
-      {_, updates?} =
-        Macro.prewalk(fun.body, false, fn
-          {:%{}, _, [{:|, _, _}]} = n, _ -> {n, true}
-          {:%, _, [_, {:%{}, _, [{:|, _, _}]}]} = n, _ -> {n, true}
-          {:struct, _, [_, _]} = n, _ -> {n, true}
-          n, acc -> {n, acc}
-        end)
+        {_, updates?} =
+          Macro.prewalk(fun.body, false, fn
+            {:%{}, _, [{:|, _, _}]} = n, _ -> {n, true}
+            {:%, _, [_, {:%{}, _, [{:|, _, _}]}]} = n, _ -> {n, true}
+            {:struct, _, [_, _]} = n, _ -> {n, true}
+            n, acc -> {n, acc}
+          end)
 
-      updates?
-    end)
+        updates?
+      end)
   end
 
   # Distinct *units* (a feature and its own submodules count once) of
@@ -351,8 +354,8 @@ defmodule AlaLint.Rules do
   defp only_constructs?(m, target) do
     uses =
       Enum.flat_map(m.functions, fn fun ->
+        # the head counts too: a struct matched in it is a read
         {_, found} =
-          # the head counts too: a struct matched in it is a read
           Macro.prewalk({fun.params, fun.body}, [], fn
             {{:., _, [{:__aliases__, _, parts}, name]}, _, _} = node, acc ->
               {node, if(resolves_to?(m, parts, target), do: [name | acc], else: acc)}
@@ -373,7 +376,7 @@ defmodule AlaLint.Rules do
   defp resolves_to?(m, parts, target) do
     [first | rest] = Enum.map(parts, &to_string/1)
     full = Enum.join([Map.get(m.aliases, first, first) | rest], ".")
-    full == target or String.ends_with?(target, "." <> full) and full != ""
+    full == target or (String.ends_with?(target, "." <> full) and full != "")
   end
 
   # ── R11: the application (top) layer is composition only (advisory). Two
@@ -480,7 +483,6 @@ defmodule AlaLint.Rules do
       else:
         "a Features layer, which holds only instances, configuration and wiring (§2.2; a coded abstraction belongs in a domain layer)"
   end
-
 
   defp iterates?(body) do
     {_, found} =
@@ -1022,6 +1024,7 @@ defmodule AlaLint.Rules do
   # same reading as a pipe whose left is a call
   defp single_call_body?({{:., _, _}, _, args}) when is_list(args),
     do: not Enum.any?(args, &computed_arg?/1)
+
   # A map/struct update or construction, or a tuple, builds a value; a call
   # embedded in one of its fields is a computation, not a delegating rename
   # (`%{s | field: Callee.f(...)}`, `%Struct{...}`, `{a, Callee.f(x)}`).

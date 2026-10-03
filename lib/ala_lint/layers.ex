@@ -87,7 +87,6 @@ defmodule AlaLint.Layers do
     declared_config =
       for {t, i} <- indexed, layer_opt(t, :config, false), into: MapSet.new(), do: i
 
-
     # Application-layer tiers. Calls *within* the application don't add height,
     # because the application is one abstraction. `app: true` marks which layer
     # that is (default: the top layer). Marking several layers to model

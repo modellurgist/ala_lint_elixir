@@ -740,7 +740,12 @@ defmodule AlaLintTest do
     # the shared domain aggregate is invisible normally, and scored from --strict up: read strictly,
     # it is Spray's shared entity (§6.17.2), and R10 is unmet
     refute Enum.any?(normal.findings, &(&1.rule == :r10_aggregate))
-    assert Enum.any?(strict.scored_findings, &(&1.rule == :r10_aggregate and &1.message =~ "Cart"))
+
+    assert Enum.any?(
+             strict.scored_findings,
+             &(&1.rule == :r10_aggregate and &1.message =~ "Cart")
+           )
+
     assert Enum.any?(sup.scored_findings, &(&1.rule == :r10_aggregate))
     assert strict.rules.by_rule.r10.state == :not_met
 

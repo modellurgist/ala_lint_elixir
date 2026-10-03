@@ -20,7 +20,8 @@ defmodule AlaLint.Template do
     {_exprs, plain} = scan(text)
 
     attrs =
-      for [_, _attr, value] <- Regex.scan(~r/\s(#{Enum.join(@label_attrs, "|")})="([^"]*)"/, plain),
+      for [_, _attr, value] <-
+            Regex.scan(~r/\s(#{Enum.join(@label_attrs, "|")})="([^"]*)"/, plain),
           readable?(value),
           do: {line_of(text, value), String.trim(value)}
 
@@ -46,7 +47,7 @@ defmodule AlaLint.Template do
   end
 
   defp count_lines(text, pos),
-    do: (text |> binary_part(0, pos) |> String.split("\n") |> length())
+    do: text |> binary_part(0, pos) |> String.split("\n") |> length()
 
   # Walks the markup once: collects expressions, and returns the markup with every
   # expression, comment, script and style blanked out (for the word scan).
@@ -85,7 +86,8 @@ defmodule AlaLint.Template do
     end
   end
 
-  defp at?(text, i, s), do: byte_size(text) - i >= byte_size(s) and binary_part(text, i, byte_size(s)) == s
+  defp at?(text, i, s),
+    do: byte_size(text) - i >= byte_size(s) and binary_part(text, i, byte_size(s)) == s
 
   defp skip_past(text, i, s) do
     case :binary.match(text, s, scope: {i, byte_size(text) - i}) do

@@ -139,7 +139,11 @@ defmodule AlaLint.LiveViewRulesTest do
     assert any?(r, :r11_share, "of application functions")
     assert any?(r, :hops, "one message hop")
     assert any?(r, :vocabulary, "6 kinds")
-    refute Enum.any?(r.scored_findings, &(&1.rule in [:r11_share, :hops, :vocabulary, :ports_unwired]))
+
+    refute Enum.any?(
+             r.scored_findings,
+             &(&1.rule in [:r11_share, :hops, :vocabulary, :ports_unwired])
+           )
   end
 
   test "a configured rule is neither a primitive wrapper nor a shared aggregate", %{r: r} do
@@ -152,14 +156,18 @@ defmodule AlaLint.UnassignedTest do
   use ExUnit.Case, async: true
 
   test "a module matching no layer is a loud, unscored warning" do
-    dir = Path.join(System.tmp_dir!(), "ala_lint_unassigned_#{System.unique_integer([:positive])}")
+    dir =
+      Path.join(System.tmp_dir!(), "ala_lint_unassigned_#{System.unique_integer([:positive])}")
+
     File.mkdir_p!(dir)
     File.write!(Path.join(dir, "a.ex"), "defmodule App.Page do\n  def x, do: 1\nend\n")
     File.write!(Path.join(dir, "b.ex"), "defmodule Stray.Thing do\n  def y, do: 2\nend\n")
 
     r = AlaLint.analyze(dir, layers: [{:app, [~r/^App\./]}, {:domain, [~r/^App\.Domain/]}])
 
-    assert [%{module: "Stray.Thing", severity: :warn}] = Enum.filter(r.findings, &(&1.rule == :unassigned))
+    assert [%{module: "Stray.Thing", severity: :warn}] =
+             Enum.filter(r.findings, &(&1.rule == :unassigned))
+
     refute Enum.any?(r.scored_findings, &(&1.rule == :unassigned))
     assert AlaLint.Report.to_text(r) =~ "!! WARNING: 1 module(s) (1 functions) match no layer"
     assert AlaLint.Report.unassigned_banner(AlaLint.analyze(dir)) == ""
@@ -211,8 +219,14 @@ defmodule AlaLint.UiIoTest do
     r = AlaLint.analyze(dir, layers: @layers, strict: true)
     msgs = for f <- r.findings, f.rule == :ui_io, do: {f.module, f.message}
 
-    assert Enum.any?(msgs, fn {m, msg} -> m == "App.Features.Cart.Panel" and msg =~ "store.list" and msg =~ "store.save" end)
-    assert Enum.any?(msgs, fn {m, msg} -> m == "App.Features.Saved.Panel" and msg =~ "Store.list" end)
+    assert Enum.any?(msgs, fn {m, msg} ->
+             m == "App.Features.Cart.Panel" and msg =~ "store.list" and msg =~ "store.save"
+           end)
+
+    assert Enum.any?(msgs, fn {m, msg} ->
+             m == "App.Features.Saved.Panel" and msg =~ "Store.list"
+           end)
+
     refute Enum.any?(msgs, fn {m, _} -> m == "App.Widgets" end)
     assert Enum.any?(r.scored_findings, &(&1.rule == :ui_io))
   end
@@ -274,7 +288,12 @@ defmodule AlaLint.FeaturesAndSubcomponentsTest do
 
   test "a Features layer is composition: wiring passes, coded logic is R11", %{r: r} do
     assert on(r, :r11, "App.Stories.UndoRemoval") == []
-    assert Enum.any?(on(r, :r11, "App.Stories.Coded"), &(&1.message =~ "a Features layer, which holds only instances, configuration and wiring"))
+
+    assert Enum.any?(
+             on(r, :r11, "App.Stories.Coded"),
+             &(&1.message =~
+                 "a Features layer, which holds only instances, configuration and wiring")
+           )
   end
 
   test "a feature may hold its configuration literals", %{r: r} do
@@ -282,7 +301,9 @@ defmodule AlaLint.FeaturesAndSubcomponentsTest do
   end
 
   test "a layer named for features can opt out" do
-    m = AlaLint.Layers.resolve([], [{:app, []}, {:feature, [], composition: false}, {:domain, []}])
+    m =
+      AlaLint.Layers.resolve([], [{:app, []}, {:feature, [], composition: false}, {:domain, []}])
+
     assert MapSet.to_list(m.composition_layers) == [0]
   end
 end
@@ -305,8 +326,18 @@ defmodule AlaLint.RulesMetTest do
     end
     ''')
 
-    layered = AlaLint.analyze(dir, layers: [{:app, [~r/^App\.Page/]}, {:domain, [~r/^App\.Domain/]}], strict: true)
-    assert %{checked: 10, total: 11, by_rule: %{r11: %{state: :not_met, scored: 1}, r8: %{state: :unchecked}}} = layered.rules
+    layered =
+      AlaLint.analyze(dir,
+        layers: [{:app, [~r/^App\.Page/]}, {:domain, [~r/^App\.Domain/]}],
+        strict: true
+      )
+
+    assert %{
+             checked: 10,
+             total: 11,
+             by_rule: %{r11: %{state: :not_met, scored: 1}, r8: %{state: :unchecked}}
+           } = layered.rules
+
     assert layered.rules.met == 9
     assert AlaLint.Report.to_text(layered) =~ "Checklist rules met: 9 of 10 checked"
 
@@ -370,7 +401,8 @@ defmodule AlaLint.StoryCompositionTest do
     {:ok, r: AlaLint.analyze(dir, layers: layers, super_strict: true)}
   end
 
-  defp msgs(r, rule, mod), do: for(f <- r.findings, f.rule == rule, f.module == mod, do: f.message)
+  defp msgs(r, rule, mod),
+    do: for(f <- r.findings, f.rule == rule, f.module == mod, do: f.message)
 
   test "naming a built instance to wire it twice isn't handling data", %{r: r} do
     refute Enum.any?(msgs(r, :r11, "App.Page"), &(&1 =~ "binds `rule`"))
@@ -421,7 +453,9 @@ defmodule AlaLint.NoComposerPortsTest do
   use ExUnit.Case, async: true
 
   test "a module that declares ports and has no composer doesn't crash the ports check" do
-    dir = Path.join(System.tmp_dir!(), "ala_lint_nocomposer_#{System.unique_integer([:positive])}")
+    dir =
+      Path.join(System.tmp_dir!(), "ala_lint_nocomposer_#{System.unique_integer([:positive])}")
+
     File.mkdir_p!(dir)
 
     File.write!(Path.join(dir, "a.ex"), ~S'''
@@ -431,7 +465,12 @@ defmodule AlaLint.NoComposerPortsTest do
     end
     ''')
 
-    r = AlaLint.analyze(dir, layers: [{:app, [~r/^App\.Page/]}, {:platform, [~r/^App\.X/]}], strict: true)
+    r =
+      AlaLint.analyze(dir,
+        layers: [{:app, [~r/^App\.Page/]}, {:platform, [~r/^App\.X/]}],
+        strict: true
+      )
+
     refute Enum.any?(r.findings, &(&1.rule == :ports_unwired))
   end
 end
@@ -459,7 +498,12 @@ defmodule AlaLint.BindingOutAndParadigmTextTest do
     end
     ''')
 
-    layers = [{:feature, [~r/^App\.Stories\./]}, {:domain, [~r/^App\.Domain\./]}, {:platform, [~r/^App\.Paradigms\./]}]
+    layers = [
+      {:feature, [~r/^App\.Stories\./]},
+      {:domain, [~r/^App\.Domain\./]},
+      {:platform, [~r/^App\.Paradigms\./]}
+    ]
+
     r = AlaLint.analyze(dir, layers: layers, strict: true)
     ports = for f <- r.findings, f.rule == :ports, do: f.message
     assert Enum.any?(ports, &(&1 =~ "`never`"))
