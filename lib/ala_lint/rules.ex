@@ -132,6 +132,7 @@ defmodule AlaLint.Rules do
       r3_text(model) ++
       r4(model) ++
       r5(model) ++
+      r5_names(model) ++
       r6(model) ++
       tramp(model) ++
       r7(model) ++
@@ -1306,6 +1307,112 @@ defmodule AlaLint.Rules do
       )
     end
   end
+
+  # ── R5: a name fired in one module and matched in another ───────────────
+  # The literal-index check above sees neither template markup nor function heads, so it misses the
+  # commonest LiveView contract: an event a template fires (`phx-click="x"`, or `event="x"` and
+  # `on_*="x"` handed to a component) handled by a `handle_event("x", ...)` or `event(..., "x", ...)`
+  # head in another module; and a timer or task started under a literal name (`start_timer`,
+  # `start_async`) and matched by another module's `handle_info` or `handle_async` head. A name both
+  # ends take from the composition's configuration is a variable at each end, so it isn't flagged,
+  # and neither is a name the naming module also handles itself.
+  @event_attr ~r/(?:phx-(?:click|submit|change|blur|focus|keyup|keydown|window-keyup|window-keydown)|event|on_[a-z_]+)="([A-Za-z0-9_-]+)"/
+  @js_push ~r/JS\.push\("([A-Za-z0-9_-]+)"/
+  @starters [:start_timer, :stop_timer, :start_async, :cancel_async]
+
+  def r5_names(model) do
+    fired =
+      for m <- model.modules,
+          {_, text} <- m.templates,
+          name <- template_events(text),
+          do: {name, m}
+
+    handled =
+      for m <- model.modules,
+          fun <- m.functions,
+          fun.name in [:handle_event, :event],
+          name <- Enum.filter(fun.params, &is_binary/1),
+          do: {name, m, fun.line}
+
+    started =
+      for m <- model.modules, fun <- m.functions, name <- started_names(fun.body), do: {name, m}
+
+    matched =
+      for m <- model.modules,
+          fun <- m.functions,
+          fun.name in [:handle_info, :handle_async],
+          name <- head_atoms(List.first(fun.params)),
+          do: {name, m, fun.line}
+
+    across(fired, handled, model, "event") ++ across(started, matched, model, "timer or task")
+  end
+
+  # a module that handles a name itself owns it; another module using the same name for its own
+  # events is a coincidence, not a contract
+  defp across(named, matched, model, kind) do
+    pairs =
+      for {name, from} <- Enum.uniq(named),
+          not Enum.any?(matched, &match?({^name, %{name: n}, _} when n == from.name, &1)),
+          {^name, to, line} <- matched,
+          not both_application?(model, from.name, to.name),
+          do: {{name, from.name, to.name}, {from, line}}
+
+    for {{name, from_name, to_name}, [{from, line} | _]} <-
+          Enum.group_by(pairs, &elem(&1, 0), &elem(&1, 1)) do
+      f(
+        :r5,
+        from_name,
+        model,
+        from,
+        line,
+        "#{kind} #{inspect(name)} is named in #{last_two(from_name)} and matched in #{last_two(to_name)} — a contract no call shows; keep both ends in one module, or let the composition hand the name to both (R5)"
+      )
+    end
+  end
+
+  # the page's template in a view module and its handlers in the page are one abstraction, the
+  # application, so a name they share is the checklist's app-owned symbolic connection, not a contract
+  defp both_application?(%{layers: %{index: _}} = model, a, b),
+    do: app_module_with_layers?(model, a) and app_module_with_layers?(model, b)
+
+  defp both_application?(_model, _a, _b), do: false
+
+  defp last_two(name),
+    do: name |> to_string() |> String.split(".") |> Enum.take(-2) |> Enum.join(".")
+
+  defp template_events(text),
+    do:
+      (Regex.scan(@event_attr, text, capture: :all_but_first) ++
+         Regex.scan(@js_push, text, capture: :all_but_first))
+      |> List.flatten()
+      |> Enum.uniq()
+
+  defp started_names(nil), do: []
+
+  defp started_names(body) do
+    {_, found} =
+      Macro.prewalk(body, [], fn
+        {{:., _, [_, name]}, _, args} = node, acc when name in @starters and is_list(args) ->
+          {node, literal_atoms(args) ++ acc}
+
+        {name, _, args} = node, acc when name in @starters and is_list(args) ->
+          {node, literal_atoms(args) ++ acc}
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    Enum.uniq(found)
+  end
+
+  defp literal_atoms(args), do: Enum.filter(args, &(is_atom(&1) and &1 not in [nil, true, false]))
+
+  # the literal atoms in a handle_info message pattern or a handle_async task name
+  defp head_atoms(name) when is_atom(name) and name not in [nil, true, false], do: [name]
+  defp head_atoms({:{}, _, elems}), do: literal_atoms(elems)
+  defp head_atoms({a, b}), do: literal_atoms([a, b])
+  defp head_atoms({:=, _, [left, right]}), do: head_atoms(left) ++ head_atoms(right)
+  defp head_atoms(_), do: []
 
   # A silent contract is a shared **identifier-like string** — an event name,
   # topic, key, or dom-id (`"move_to_cart"`, `"item-removed"`), not CSS classes

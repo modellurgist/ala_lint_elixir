@@ -401,13 +401,23 @@ defmodule AlaLint.LiveViewRules do
 
   defp put_port(acc, _), do: acc
 
-  # the port atom of every `send_out*(socket, key, :port, ...)` call, piped or not, and of every
-  # `{:out, port}` binding
+  defp put_tuple_port({port, _}, acc) when is_atom(port) and port not in [nil, true, false],
+    do: MapSet.put(acc, port)
+
+  defp put_tuple_port(_, acc), do: acc
+
+  # the port atom of every `send_out*(socket, key, :port, ...)` call, piped or not, of every
+  # `{:out, port}` binding, and of every `out.(socket, {port, payload})` call to a function the
+  # composition was given for its outputs
   defp sent_ports(m) do
     for fun <- m.functions, reduce: MapSet.new() do
       acc ->
         {_, found} =
           Macro.prewalk(fun.body, acc, fn
+            {{:., _, [{var, _, ctx}]}, _, args} = node, a
+            when is_atom(var) and is_atom(ctx) and is_list(args) ->
+              {node, Enum.reduce(args, a, &put_tuple_port/2)}
+
             {{:., _, [_, name]}, _, args} = node, a when is_atom(name) and is_list(args) ->
               {node, if(send_out?(name), do: put_port(a, args), else: a)}
 
@@ -565,9 +575,11 @@ defmodule AlaLint.LiveViewRules do
     {_, acc} =
       Macro.prewalk(body, [], fn
         {:&, meta, [{name, _, args}]} = node, acc when is_atom(name) and is_list(args) ->
-          if MapSet.member?(privates, name) and Enum.any?(args, &(not capture_arg?(&1))),
-            do: {node, [{meta[:line] || line, name} | acc]},
-            else: {node, acc}
+          # binding a key to the composition's own `wire` names where outputs go, not what they do
+          if name != :wire and MapSet.member?(privates, name) and
+               Enum.any?(args, &(not capture_arg?(&1))),
+             do: {node, [{meta[:line] || line, name} | acc]},
+             else: {node, acc}
 
         node, acc ->
           {node, acc}

@@ -614,3 +614,136 @@ defmodule AlaLint.DistinctFunctionsTest do
     assert AlaLint.Report.to_text(r) =~ "functions: 2 (4 clauses)"
   end
 end
+
+defmodule AlaLint.OutClosureStoriesTest do
+  use ExUnit.Case, async: true
+
+  test "a story sends through the out function it's given; the page binding a key to its wire isn't a closure" do
+    dir = Path.join(System.tmp_dir!(), "ala_lint_outfn_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+
+    File.write!(Path.join(dir, "a.ex"), ~S'''
+    defmodule App.Stories.S do
+      def parts, do: %{part: App.State.P}
+      def ports, do: %{in: [go: :event], out: [done: :item, piped: :item, never: :item]}
+      def input(s, :go, x, out), do: s |> out.({:piped, x}) |> then(&out.(&1, {:done, x}))
+    end
+
+    defmodule App.Page do
+      def parts, do: %{s: App.Stories.S}
+      def go(s), do: App.Stories.S.input(s, :go, 1, out(:s))
+      defp out(key), do: &wire(&1, key, &2)
+      defp hidden(s), do: &helper(&1, s)
+      defp helper(a, b), do: {a, b}
+      defp wire(s, :s, {:done, _}), do: s
+      defp wire(s, :s, {:piped, _}), do: s
+    end
+    ''')
+
+    layers = [
+      {:app, [~r/^App\.Page$/]},
+      {:feature, [~r/^App\.Stories\./]},
+      {:state, [~r/^App\.State\./]}
+    ]
+
+    r = AlaLint.analyze(dir, layers: layers, strict: true)
+    ports = for f <- r.findings, f.rule == :ports, do: f.message
+    assert Enum.any?(ports, &(&1 =~ "`never`"))
+    refute Enum.any?(ports, &(&1 =~ "`done`" or &1 =~ "`piped`"))
+    closures = for f <- r.findings, f.rule == :wiring_closure, do: f.message
+    assert Enum.any?(closures, &(&1 =~ "helper"))
+    refute Enum.any?(closures, &(&1 =~ "wire/"))
+  end
+end
+
+defmodule AlaLint.CrossModuleNamesTest do
+  use ExUnit.Case, async: true
+
+  test "an event or timer named in one module and matched only in another is R5; one module, a shared own name, or a configured name isn't" do
+    dir = Path.join(System.tmp_dir!(), "ala_lint_names_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+
+    File.write!(Path.join(dir, "a.ex"), ~S'''
+    defmodule App.Stories.Leaky do
+      use Phoenix.Component
+      def view(assigns), do: ~H"""
+      <button phx-click="go_far">Go</button>
+      <.row on_remove="drop_line" />
+      """
+      def mount(s), do: Steps.start_timer(s, :expiry, 1, 10)
+    end
+
+    defmodule App.Stories.Tidy do
+      use Phoenix.Component
+      def view(assigns), do: ~H"""
+      <button phx-click="stay_home">Stay</button>
+      """
+      def handle_event("stay_home", _p, s, _out), do: s
+      def mount(s, timer), do: Steps.start_timer(s, timer, 1, 10)
+    end
+
+    defmodule App.OtherPage do
+      use Phoenix.Component
+      def view(assigns), do: ~H"""
+      <button phx-click="stay_home">Here too</button>
+      """
+      def handle_event("stay_home", _p, s), do: s
+    end
+
+    defmodule App.Page do
+      def handle_event("go_far", _p, s), do: s
+      def handle_event("drop_line", _p, s), do: s
+      def handle_info({:timer, :expiry, _}, s), do: s
+      def handle_info({:timer, :configured, _}, s), do: s
+      def mount(s), do: App.Stories.Tidy.mount(s, :configured)
+    end
+    ''')
+
+    r = AlaLint.analyze(dir)
+    msgs = for f <- r.findings, f.rule == :r5, do: f.message
+    assert Enum.any?(msgs, &(&1 =~ ~s(event "go_far") and &1 =~ "Leaky" and &1 =~ "Page"))
+    assert Enum.any?(msgs, &(&1 =~ ~s(event "drop_line")))
+    assert Enum.any?(msgs, &(&1 =~ "timer or task :expiry"))
+    refute Enum.any?(msgs, &(&1 =~ "stay_home" or &1 =~ ":configured"))
+  end
+end
+
+defmodule AlaLint.ApplicationNamesTest do
+  use ExUnit.Case, async: true
+
+  test "a page's view module and its page share event names as one application; a story and the page don't" do
+    dir = Path.join(System.tmp_dir!(), "ala_lint_appnames_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+
+    File.write!(Path.join(dir, "a.ex"), ~S'''
+    defmodule App.CartView do
+      use Phoenix.Component
+      def render(assigns), do: ~H"""
+      <button phx-click="check_out">Pay</button>
+      """
+    end
+
+    defmodule App.Stories.Edit do
+      use Phoenix.Component
+      def view(assigns), do: ~H"""
+      <button phx-click="edit_line">Edit</button>
+      """
+    end
+
+    defmodule App.CartPage do
+      def handle_event("check_out", _p, s), do: s
+      def handle_event("edit_line", _p, s), do: s
+    end
+    ''')
+
+    layers = [
+      {:app, [~r/^App\.Cart(View|Page)$/]},
+      {:feature, [~r/^App\.Stories\./]},
+      {:platform, [~r/^App\.X$/]}
+    ]
+
+    msgs = for f <- AlaLint.analyze(dir, layers: layers).findings, f.rule == :r5, do: f.message
+    assert Enum.any?(msgs, &(&1 =~ ~s(event "edit_line")))
+    refute Enum.any?(msgs, &(&1 =~ "check_out"))
+  end
+end
