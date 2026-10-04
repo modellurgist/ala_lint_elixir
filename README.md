@@ -1,4 +1,4 @@
-# AlaLint (ala_lint_elixir)
+# ALA Lint (ala_lint_elixir)
 
 A static-analysis linter that scores an Elixir codebase against the **ALA Checklist** (R1–R11):
 coupling & layering, requirements-locus, state-as-a-wire, cross-boundary contracts, nameability,
@@ -21,13 +21,12 @@ it runs on any codebase without its deps.
 > [Abstraction Layered Architecture](https://www.abstractionlayeredarchitecture.com/).
 > Not affiliated with or endorsed by the author.
 
-## Install (local dev dependency)
+## Install
 
 ```elixir
 # mix.exs
 defp deps do
   [
-    # in an app:
     {:ala_lint, "~> 0.1", only: [:dev, :test], runtime: false}
   ]
 end
