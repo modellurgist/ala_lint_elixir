@@ -21,7 +21,7 @@ defmodule AlaLint.Report do
 
   alias AlaLint.Rules
 
-  def build(model, findings) do
+  def build(model, findings, accepted \\ [], acceptances \\ []) do
     enforce = Map.get(model, :enforce, [])
     {scored, advisory} = Enum.split_with(findings, &scored?(&1, enforce))
 
@@ -45,6 +45,11 @@ defmodule AlaLint.Report do
       findings: findings,
       scored_findings: scored,
       advisory_findings: advisory,
+      # findings a reviewer's `ala:accept` comment took out of the score, and every such comment
+      accepted: accepted,
+      acceptances: acceptances,
+      # `@inherent_*` declarations: [{module, name, line}]
+      inherent: for(m <- model.modules, {name, line} <- Enum.reverse(m.inherent), do: {m.name, m.file, name, line}),
       by_rule: by_rule,
       height: Rules.height_value(model),
       layer_coverage: layer_coverage(model),
@@ -263,6 +268,7 @@ defmodule AlaLint.Report do
         #{cohesion_lines(report.layer_dirs)}
 
         #{rules_met_lines(report.rules)}
+        #{accepted_line(report)}
 
         Degree of function compliance: #{report.score}/100  (grade #{report.grade})
           — 100 minus the weighted-violation load; counts findings (severity-weighted),
@@ -444,6 +450,56 @@ defmodule AlaLint.Report do
       — a count, not a density: one finding in a large codebase still leaves its rule unmet.
       #{marks}\
     """
+  end
+
+  defp accepted_line(%{acceptances: []}), do: ""
+
+  defp accepted_line(report) do
+    unused = Enum.count(report.acceptances, fn a -> not Enum.any?(report.accepted, &AlaLint.Acceptance.covers?(a, &1)) end)
+    tail = if unused > 0, do: ", #{unused} covering nothing", else: ""
+    "Accepted by hand: #{length(report.accepted)} finding(s) under #{length(report.acceptances)} ala:accept comment(s)#{tail}; --list-accepted prints them"
+  end
+
+  @doc """
+  Every `@inherent_*` declaration and every `ala:accept` comment, with the findings each covers; a
+  comment that covers nothing is stale, or its check no longer fires there.
+  """
+  def accepted_listing(report) do
+    inherent =
+      case report.inherent do
+        [] ->
+          ""
+
+        decls ->
+          "Inherent text declared (#{length(decls)}; R3's domain-vocabulary exception, the words are the abstraction's own):\n" <>
+            Enum.map_join(decls, "", fn {mod, file, name, line} -> "  #{rel(file)}:#{line}  #{mod} @#{name}\n" end)
+      end
+
+    comments =
+      case report.acceptances do
+        [] ->
+          "No ala:accept comments.\n"
+
+        list ->
+          "Accepted by hand (#{length(report.accepted)} finding(s) under #{length(list)} comment(s)):\n" <>
+            Enum.map_join(list, "", fn a ->
+              covered = Enum.filter(report.accepted, &AlaLint.Acceptance.covers?(a, &1))
+              reason = if a.reason == "", do: "", else: "  -- #{a.reason}"
+
+              head =
+                "  #{rel(a.file)}:#{a.line}  #{Enum.join(a.checks, ",")}  lines #{AlaLint.Acceptance.range(a)}#{reason}\n"
+
+              body =
+                case covered do
+                  [] -> "      ↳ covers nothing: stale, or the check no longer fires here\n"
+                  fs -> Enum.map_join(fs, "", &"      ↳ [#{&1.rule}] line #{&1.line}: #{&1.message}\n")
+                end
+
+              head <> body
+            end)
+      end
+
+    inherent <> comments
   end
 
   defp rel(nil), do: "?"

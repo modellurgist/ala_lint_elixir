@@ -16,6 +16,8 @@ defmodule AlaLint.Analyzer do
               functions: [],
               refs: MapSet.new(),
               literals: [],
+              # `@inherent_*` attributes: words the reviewer declared the abstraction's own, [{name, line}]
+              inherent: [],
               state_ops: [],
               # short alias → full module name (for function-graph call resolution)
               aliases: %{},
@@ -446,7 +448,9 @@ defmodule AlaLint.Analyzer do
   defp walk({sigil, meta, [{:<<>>, _, parts} | _]} = node, st, _k)
        when sigil in [:sigil_H, :sigil_L] and st.current != nil do
     text = parts |> Enum.filter(&is_binary/1) |> Enum.join()
-    template = {meta[:line] || 0, text}
+    # a heredoc sigil's text starts on the line after `~H"""`, so its first line is base + 1
+    base = (meta[:line] || 0) + if(meta[:delimiter] == ~s("""), do: 1, else: 0)
+    template = {base, text}
     {node, update_mod(st, st.current, fn m -> %{m | templates: m.templates ++ [template]} end)}
   end
 
@@ -472,7 +476,25 @@ defmodule AlaLint.Analyzer do
   end
 
   # generic descent
+  # `@inherent_labels %{...}`: the words under it are the abstraction's own domain vocabulary, not
+  # this product's (the checklist's R3 exception), so none of its literals is recorded. The
+  # declaration is kept for the report's listing. Any other attribute walks as a generic node.
+  defp walk({:@, meta, [{name, _, [_value]}]} = node, st, k)
+       when st.current != nil and is_atom(name) and name not in [:callback, :behaviour, :ala_layer] do
+    if String.starts_with?(Atom.to_string(name), "inherent_") do
+      line = meta[:line] || 0
+      {node, update_mod(st, st.current, fn m -> %{m | inherent: [{name, line} | m.inherent]} end)}
+    else
+      walk_generic(node, st, k)
+    end
+  end
+
   defp walk({_form, _meta, args} = node, st, _k) when is_list(args) do
+    {_, st} = walk(args, st, & &1)
+    {node, st}
+  end
+
+  defp walk_generic({_form, _meta, args} = node, st, _k) when is_list(args) do
     {_, st} = walk(args, st, & &1)
     {node, st}
   end

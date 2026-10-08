@@ -113,13 +113,16 @@ defmodule AlaLint do
         weights: Rules.weights()
       })
 
-    findings =
+    acceptances = AlaLint.Acceptance.scan_roots(root)
+
+    {accepted, findings} =
       model
       |> Rules.run()
       |> Enum.reject(&(&1.rule in disabled))
       |> Enum.map(fn f -> if f.rule in soft, do: %{f | severity: :warn}, else: f end)
+      |> Enum.split_with(fn f -> Enum.any?(acceptances, &AlaLint.Acceptance.covers?(&1, f)) end)
 
-    Report.build(model, findings)
+    Report.build(model, findings, accepted, acceptances)
   end
 
   defp put_layers(model, nil), do: Map.put(model, :layers, nil)

@@ -64,6 +64,35 @@ being silently dropped.
 > and is ignored once one is given; with a layer map, R3 uses the `config: true`
 > layer (defaulting to the top).
 
+## Accepting a finding by hand (`ala:accept`, `@inherent_`)
+
+Several checks turn on a judgement the tool can't make: whether a word below the composition is
+the product's (hoist it) or the abstraction's domain's own (keep it; the checklist's R3 exception),
+whether a page's branch is routing or logic, whether a shared struct is a ground symbol. A comment
+on the line above records the reviewer's call where the code is, names the exact check, and takes
+that line (or the next N lines) out of the score for that check only:
+
+```elixir
+# ala:accept r3 -- "Out of stock" is retail's word, not this store's (R3, domain vocabulary)
+def label, do: "Out of stock"
+
+# ala:accept r3,r6 lines=2 -- two checks, the next two lines
+```
+
+```heex
+<%!-- ala:accept r11 -- the one loop this page keeps, until a rows component exists --%>
+<div :for={row <- @rows}>…</div>
+```
+
+For words there is a declaration instead of a comment: a module attribute named `@inherent_...`
+holds the abstraction's own vocabulary, and R3 reads nothing inside it as product text.
+
+The check names are the ones `--list-checks` prints; an unknown one fails the run. Accepted
+findings leave the score and the rules-met count, and the report says how many were accepted and
+under how many comments. `mix ala.lint --list-accepted` prints every `@inherent_` declaration and
+every comment with the findings it covers, and marks the ones that cover nothing, which is how a
+stale acceptance shows up after the code moved.
+
 ## Configuring checks (`.ala_lint.exs`)
 
 The CLI carries the common path (paths, tiers, `--min-score`). Durable, per-check
