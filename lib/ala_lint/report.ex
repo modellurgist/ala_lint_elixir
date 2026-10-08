@@ -49,7 +49,12 @@ defmodule AlaLint.Report do
       accepted: accepted,
       acceptances: acceptances,
       # `@inherent_*` declarations: [{module, name, line}]
-      inherent: for(m <- model.modules, {name, line} <- Enum.reverse(m.inherent), do: {m.name, m.file, name, line}),
+      inherent:
+        for(
+          m <- model.modules,
+          {name, line} <- Enum.reverse(m.inherent),
+          do: {m.name, m.file, name, line}
+        ),
       by_rule: by_rule,
       height: Rules.height_value(model),
       layer_coverage: layer_coverage(model),
@@ -455,8 +460,13 @@ defmodule AlaLint.Report do
   defp accepted_line(%{acceptances: []}), do: ""
 
   defp accepted_line(report) do
-    unused = Enum.count(report.acceptances, fn a -> not Enum.any?(report.accepted, &AlaLint.Acceptance.covers?(a, &1)) end)
+    unused =
+      Enum.count(report.acceptances, fn a ->
+        not Enum.any?(report.accepted, &AlaLint.Acceptance.covers?(a, &1))
+      end)
+
     tail = if unused > 0, do: ", #{unused} covering nothing", else: ""
+
     "Accepted by hand: #{length(report.accepted)} finding(s) under #{length(report.acceptances)} ala:accept comment(s)#{tail}; --list-accepted prints them"
   end
 
@@ -472,7 +482,9 @@ defmodule AlaLint.Report do
 
         decls ->
           "Inherent text declared (#{length(decls)}; R3's domain-vocabulary exception, the words are the abstraction's own):\n" <>
-            Enum.map_join(decls, "", fn {mod, file, name, line} -> "  #{rel(file)}:#{line}  #{mod} @#{name}\n" end)
+            Enum.map_join(decls, "", fn {mod, file, name, line} ->
+              "  #{rel(file)}:#{line}  #{mod} @#{name}\n"
+            end)
       end
 
     comments =
@@ -491,8 +503,15 @@ defmodule AlaLint.Report do
 
               body =
                 case covered do
-                  [] -> "      ↳ covers nothing: stale, or the check no longer fires here\n"
-                  fs -> Enum.map_join(fs, "", &"      ↳ [#{&1.rule}] line #{&1.line}: #{&1.message}\n")
+                  [] ->
+                    "      ↳ covers nothing: stale, or the check no longer fires here\n"
+
+                  fs ->
+                    Enum.map_join(
+                      fs,
+                      "",
+                      &"      ↳ [#{&1.rule}] line #{&1.line}: #{&1.message}\n"
+                    )
                 end
 
               head <> body

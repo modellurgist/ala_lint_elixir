@@ -480,7 +480,8 @@ defmodule AlaLint.Analyzer do
   # this product's (the checklist's R3 exception), so none of its literals is recorded. The
   # declaration is kept for the report's listing. Any other attribute walks as a generic node.
   defp walk({:@, meta, [{name, _, [_value]}]} = node, st, k)
-       when st.current != nil and is_atom(name) and name not in [:callback, :behaviour, :ala_layer] do
+       when st.current != nil and is_atom(name) and
+              name not in [:callback, :behaviour, :ala_layer] do
     if String.starts_with?(Atom.to_string(name), "inherent_") do
       line = meta[:line] || 0
       {node, update_mod(st, st.current, fn m -> %{m | inherent: [{name, line} | m.inherent]} end)}

@@ -9,7 +9,14 @@ defmodule AlaLint.Acceptance do
   @pattern ~r/ala:accept\s+([a-z0-9_]+(?:,[a-z0-9_]+)*)(?:\s+lines=(\d+))?(?:\s+--\s*(.*?))?\s*(?:--%>)?\s*$/
   @marker ~r/(#|<%!--)\s*ala:accept\b/
 
-  @type t :: %{file: String.t(), line: pos_integer(), checks: [atom()], from: pos_integer(), to: pos_integer(), reason: String.t()}
+  @type t :: %{
+          file: String.t(),
+          line: pos_integer(),
+          checks: [atom()],
+          from: pos_integer(),
+          to: pos_integer(),
+          reason: String.t()
+        }
 
   @doc "Every acceptance comment in the files under the roots (`.ex`, `.exs` and `.heex`)."
   def scan_roots(roots) do
@@ -44,7 +51,17 @@ defmodule AlaLint.Acceptance do
         end
 
         n = if count == "", do: 1, else: String.to_integer(count)
-        [%{file: file, line: line, checks: checks, from: line + 1, to: line + n, reason: String.trim(reason)}]
+
+        [
+          %{
+            file: file,
+            line: line,
+            checks: checks,
+            from: line + 1,
+            to: line + n,
+            reason: String.trim(reason)
+          }
+        ]
       else
         _ -> []
       end
@@ -56,7 +73,9 @@ defmodule AlaLint.Acceptance do
 
   @doc "Whether this acceptance takes the finding out of the score."
   def covers?(a, finding),
-    do: finding.file == a.file and finding.rule in a.checks and finding.line >= a.from and finding.line <= a.to
+    do:
+      finding.file == a.file and finding.rule in a.checks and finding.line >= a.from and
+        finding.line <= a.to
 
   def range(%{from: f, to: f}), do: Integer.to_string(f)
   def range(%{from: f, to: t}), do: "#{f}–#{t}"
