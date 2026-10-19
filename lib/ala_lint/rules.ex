@@ -41,7 +41,9 @@ defmodule AlaLint.Rules do
     vocabulary: 1,
     unassigned: 1,
     ui_io: 1,
-    subcomponent: 1
+    subcomponent: 1,
+    clone: 1,
+    clone_inside: 1
   }
   def weights, do: @weights
 
@@ -51,7 +53,9 @@ defmodule AlaLint.Rules do
   # tier (only by `--enforce`): app_share and module_avg (ratios that penalise an
   # app for having many pages or small single-function abstractions). Since
   # 2026-10-03 r10_aggregate is scored by `--strict`: Spray's shared entity
-  # (§6.17.2) read strictly, a domain struct several features read.
+  # (§6.17.2) read strictly, a domain struct several features read. `clone` (duplicated logic)
+  # joined on 2026-10-19 at the same tier: agents met the other checks by copying logic. Its
+  # same-module half, `clone_inside`, is never promoted (an abstraction's interior, R7).
   @advisory_rules [
     :r7,
     :r11,
@@ -65,7 +69,8 @@ defmodule AlaLint.Rules do
     :ports,
     :ui_io,
     :subcomponent,
-    :r10_aggregate
+    :r10_aggregate,
+    :clone
   ]
   def advisory_rules, do: @advisory_rules
 
@@ -96,7 +101,9 @@ defmodule AlaLint.Rules do
     vocabulary: :info,
     unassigned: :warn,
     ui_io: :warn,
-    subcomponent: :warn
+    subcomponent: :warn,
+    clone: :warn,
+    clone_inside: :warn
   }
   def default_severity(rule), do: Map.get(@severity, rule, :error)
 
@@ -141,7 +148,9 @@ defmodule AlaLint.Rules do
       r10_aggregate(model) ++
       r11(model) ++
       module_size(model) ++
-      height(model) ++ passthrough(model) ++ public_surface(model) ++ layer_validity(model)
+      height(model) ++
+      passthrough(model) ++
+      public_surface(model) ++ layer_validity(model) ++ AlaLint.Clones.run(model)
   end
 
   # ── R9: an abstraction owns no interface except its own configuration. A
@@ -238,8 +247,9 @@ defmodule AlaLint.Rules do
         si = idx[m.name],
         si != nil,
         not Map.get(peer_ok, si, true),
-        units_sharing = entity_sharers(m, model, idx, peer_ok, units, &(&1 == si)),
-        MapSet.size(units_sharing) >= 2 do
+        {units_sharing, readers} <- [entity_sharers(m, model, idx, peer_ok, units, &(&1 == si))],
+        MapSet.size(units_sharing) >= 2,
+        MapSet.size(readers) >= 1 do
       who = units_sharing |> Enum.map(&short/1) |> Enum.sort() |> Enum.join(", ")
 
       f(
@@ -298,8 +308,9 @@ defmodule AlaLint.Rules do
         si = idx[m.name],
         si != nil,
         si < bottom,
-        units_sharing = entity_sharers(m, model, idx, peer_ok, units, &(&1 < si)),
-        MapSet.size(units_sharing) >= 2 do
+        {units_sharing, readers} <- [entity_sharers(m, model, idx, peer_ok, units, &(&1 < si))],
+        MapSet.size(units_sharing) >= 2,
+        MapSet.size(readers) >= 1 do
       who = units_sharing |> Enum.map(&short/1) |> Enum.sort() |> Enum.join(", ")
 
       f(
@@ -333,26 +344,29 @@ defmodule AlaLint.Rules do
       end)
   end
 
-  # Distinct *units* (a feature and its own submodules count once) of
-  # peer-forbidden layers selected by `layer?` that reference the struct module,
-  # including the struct's own unit.
+  # Distinct *units* (a feature and its own submodules count once) of peer-forbidden layers
+  # selected by `layer?` that use the struct, and those among them that read it. Building an
+  # instance is configuration (a feature "creates instances of domain abstractions", Spray §2.2);
+  # building one and calling the abstraction's own functions on it is using it through its API (the
+  # checklist's "still allowed"). A unit that matches or builds the struct, or calls into an
+  # instance it never built, knows another's data: a reader.
   defp entity_sharers(struct_mod, model, idx, peer_ok, units, layer?) do
-    for m <- model.modules,
-        MapSet.member?(m.refs, struct_mod.name) or m.name == struct_mod.name,
-        # building an instance is configuration (a feature "creates instances of domain
-        # abstractions", Spray §2.2), not knowing its data
-        m.name == struct_mod.name or not only_constructs?(m, struct_mod.name),
-        i = idx[m.name],
-        i != nil,
-        layer?.(i),
-        not Map.get(peer_ok, i, true),
-        into: MapSet.new() do
-      AlaLint.Layers.unit(m.name, units[i])
-    end
+    used =
+      for m <- model.modules,
+          MapSet.member?(m.refs, struct_mod.name) or m.name == struct_mod.name,
+          i = idx[m.name],
+          i != nil,
+          layer?.(i),
+          not Map.get(peer_ok, i, true),
+          kind = use_kind(m, struct_mod.name),
+          kind != :constructs,
+          do: {AlaLint.Layers.unit(m.name, units[i]), kind}
+
+    {MapSet.new(used, &elem(&1, 0)), for({unit, :reads} <- used, into: MapSet.new(), do: unit)}
   end
 
-  # every reference `m` makes to `target` is a call to its `new`: no struct pattern, no other call
-  defp only_constructs?(m, target) do
+  # :constructs (only calls `new`), :owns (builds its own instance and only calls the API), :reads
+  defp use_kind(m, target) do
     uses =
       Enum.flat_map(m.functions, fn fun ->
         # the head counts too: a struct matched in it is a read
@@ -371,7 +385,11 @@ defmodule AlaLint.Rules do
         found
       end)
 
-    uses != [] and Enum.all?(uses, &(&1 == :new))
+    cond do
+      uses != [] and Enum.all?(uses, &(&1 == :new)) -> :constructs
+      :new in uses and :struct not in uses -> :owns
+      true -> :reads
+    end
   end
 
   defp resolves_to?(m, parts, target) do
@@ -1032,6 +1050,8 @@ defmodule AlaLint.Rules do
   defp single_call_body?({:%{}, _, _}), do: false
   defp single_call_body?({:%, _, _}), do: false
   defp single_call_body?({:{}, _, _}), do: false
+  # LiveView's assign is the socket's map update: a built value put in state, as above
+  defp single_call_body?({:assign, _, [_ | _]}), do: false
 
   defp single_call_body?({name, _, args})
        when is_atom(name) and is_list(args) and name not in @nontrivial_forms,

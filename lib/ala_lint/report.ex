@@ -100,6 +100,8 @@ defmodule AlaLint.Report do
     passthrough: :r7,
     height: :r7,
     public_surface: :r7,
+    clone: :r7,
+    clone_inside: :r7,
     r9: :r9,
     ports: :r9,
     r10: :r10,
@@ -350,7 +352,7 @@ defmodule AlaLint.Report do
 
     Parameters (effective — defaults unless overridden):
       root:           #{params[:root]}
-      max_height:     #{params[:max_height]}   max_module_loc: #{params[:max_module_loc]}   max_public_funs: #{params[:max_public_funs]}   app_share: #{params[:max_app_share]}   min_avg_module_loc: #{params[:min_avg_module_loc]}
+      max_height:     #{params[:max_height]}   max_module_loc: #{params[:max_module_loc]}   max_public_funs: #{params[:max_public_funs]}   app_share: #{params[:max_app_share]}   min_avg_module_loc: #{params[:min_avg_module_loc]}   clone.min: #{params[:min_clone_size]}
       enforce:        #{enforce}#{integrity}
       layers:         #{params[:layers]}
       config_modules: #{fmt_list(params[:config_modules])}

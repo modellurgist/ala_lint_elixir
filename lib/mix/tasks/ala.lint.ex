@@ -48,7 +48,7 @@ defmodule Mix.Tasks.Ala.Lint do
     --enforce CHECK      promote one advisory check to scored (repeatable)
     --disable CHECK      turn one check off entirely (repeatable)
     --set KEY=VALUE      set a threshold (repeatable): height.max, module_size.max,
-                         public_surface.max, app_share.max, min_score
+                         public_surface.max, app_share.max, clone.min, min_score
     --config-module MOD  treat MOD as a config/manifest locus for R3 (repeatable)
 
   Durable settings belong in a `.ala_lint.exs` map at the project root
@@ -117,7 +117,8 @@ defmodule Mix.Tasks.Ala.Lint do
         :max_app_share,
         :max_module_loc,
         :max_public_funs,
-        :min_avg_module_loc
+        :min_avg_module_loc,
+        :min_clone_size
       ])
       |> Enum.into([])
 

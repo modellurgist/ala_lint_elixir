@@ -33,6 +33,7 @@ defmodule AlaLint.Config do
     "module_size.min_avg" => :min_avg_module_loc,
     "public_surface.max" => :max_public_funs,
     "app_share.max" => :max_app_share,
+    "clone.min" => :min_clone_size,
     "min_score" => :min_score
   }
 
@@ -109,6 +110,7 @@ defmodule AlaLint.Config do
   defp rule_param(:r11), do: :max_app_share
   defp rule_param(:app_share), do: :max_app_share
   defp rule_param(:module_avg), do: :min_avg_module_loc
+  defp rule_param(:clone), do: :min_clone_size
   defp rule_param(_), do: nil
 
   defp cast(:max_app_share, v), do: parse_float(v)

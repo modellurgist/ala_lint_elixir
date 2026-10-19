@@ -396,6 +396,36 @@ defmodule AlaLintTest do
     File.rm_rf!(dir)
   end
 
+  test "a LiveView assign holding a call builds state, like a struct update, and is not a pass-through" do
+    dir = Path.join(System.tmp_dir!(), "ala_assign_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+
+    File.write!(Path.join(dir, "c.ex"), """
+    defmodule Totals do
+      def new(opts), do: opts
+    end
+    defmodule PriceOrder do
+      def mount(s, opts), do: assign(s, totals: Totals.new(pricing: opts[:pricing]))
+      def forward(opts), do: Totals.new(opts)
+    end
+    defmodule Page do
+      def mount(s), do: PriceOrder.mount(s, pricing: 1)
+      def other(o), do: PriceOrder.forward(o)
+    end
+    """)
+
+    r = AlaLint.analyze(dir)
+    pt = Enum.filter(r.findings, &(&1.rule == :passthrough))
+
+    refute Enum.any?(pt, &(&1.message =~ "PriceOrder.mount")),
+           "assigning a built value is building state, not a rename"
+
+    assert Enum.any?(pt, &(&1.message =~ "PriceOrder.forward")),
+           "a bare forward is still a pass-through"
+
+    File.rm_rf!(dir)
+  end
+
   test "resolves cross-module calls through the alias table into the call graph" do
     dir = Path.join(System.tmp_dir!(), "ala_lint_cg_#{System.unique_integer([:positive])}")
     File.mkdir_p!(dir)
@@ -752,6 +782,61 @@ defmodule AlaLintTest do
     # a value type shared on purpose can be read as advisory again
     soft = AlaLint.analyze(dir, layers: layers, strict: true, checks: %{r10_aggregate: :advisory})
     refute Enum.any?(soft.scored_findings, &(&1.rule == :r10_aggregate))
+  end
+
+  test "features that each build their own instance and use its API reuse the abstraction" do
+    dir = Path.join(System.tmp_dir!(), "ala_reuse_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(Path.join(dir, "features"))
+
+    File.write!(Path.join(dir, "promo.ex"), """
+    defmodule App.Domain.Promo do
+      defstruct [:codes, :code]
+      def new(codes), do: %__MODULE__{codes: codes}
+      def enter(%__MODULE__{} = p, code), do: %{p | code: code}
+    end
+    """)
+
+    File.write!(Path.join(dir, "features/cart.ex"), """
+    defmodule App.Features.Cart do
+      alias App.Domain.Promo
+      def mount, do: Promo.new(["SAVE10"])
+      def apply(p, code), do: Promo.enter(p, code)
+    end
+    """)
+
+    File.write!(Path.join(dir, "features/order.ex"), """
+    defmodule App.Features.Order do
+      alias App.Domain.Promo
+      def mount, do: Promo.new(["TRADE5"])
+      def apply(p, code), do: Promo.enter(p, code)
+    end
+    """)
+
+    layers = [
+      {:feature, [~r/App\.Features\./], peer_ok: false, unit: ~r/(App\.Features\.[^.]+)/},
+      {:domain, [~r/App\.Domain\./], peer_ok: true},
+      {:platform, [~r/App\.Platform\./], peer_ok: true}
+    ]
+
+    reuse = AlaLint.analyze(dir, layers: layers, strict: true)
+    refute Enum.any?(reuse.findings, &(&1.rule == :r10_aggregate))
+
+    # a feature handed the other's instance, building none of its own, still knows its data
+    File.write!(Path.join(dir, "features/order.ex"), """
+    defmodule App.Features.Order do
+      alias App.Domain.Promo
+      def apply(p, code), do: Promo.enter(p, code)
+    end
+    """)
+
+    shared = AlaLint.analyze(dir, layers: layers, strict: true)
+
+    assert Enum.any?(
+             shared.scored_findings,
+             &(&1.rule == :r10_aggregate and &1.message =~ "Promo")
+           )
+
+    File.rm_rf!(dir)
   end
 
   test "R11 is advisory under strict, scored only under super-strict" do

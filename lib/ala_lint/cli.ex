@@ -42,6 +42,8 @@ defmodule AlaLint.CLI do
     subcomponent   a LiveComponent inside the application or a Features layer: a contained
                    sub-component (R11, §2.2)
     r10_aggregate  a domain struct several features read: Spray's shared entity (R10, §6.17.2)
+    clone          the same logic in two functions, names and literals aside (R7)
+                                                 --set clone.min=N           (default 26 nodes)
 
   ASPIRATIONAL  (reported by default; scored only under --super-strict)
     r11            no logic in a composition layer (the application, and a Features layer,
@@ -55,6 +57,7 @@ defmodule AlaLint.CLI do
   REPORTED ONLY  (never scored by a tier; --enforce CHECK to score one)
     app_share      application-layer share of functions --set app_share.max=F (default 0.20)
     module_avg     files averaging under N lines         --set module_size.min_avg=N (default 100)
+    clone_inside   the same logic in two functions of one module (R7: an abstraction's interior)
     unassigned     a module matching no layer: the layer-aware checks skip it (loud warning;
                    --require-layers fails the run)
     ports_unwired  a declared output no composer names (a prompt for a coverage test)

@@ -82,6 +82,10 @@ defmodule AlaLint do
     min_avg_module_loc =
       Keyword.get(opts, :min_avg_module_loc) || Map.get(t, :min_avg_module_loc) || 100
 
+    min_clone_size =
+      Keyword.get(opts, :min_clone_size) || Map.get(t, :min_clone_size) ||
+        AlaLint.Clones.default_min_size()
+
     layers_spec = Keyword.get(opts, :layers)
 
     model =
@@ -95,6 +99,7 @@ defmodule AlaLint do
       |> Map.put(:max_module_loc, max_module_loc)
       |> Map.put(:max_public_funs, max_public_funs)
       |> Map.put(:min_avg_module_loc, min_avg_module_loc)
+      |> Map.put(:min_clone_size, min_clone_size)
       |> put_layers(layers_spec)
       |> Map.put(:params, %{
         root: root,
@@ -104,6 +109,7 @@ defmodule AlaLint do
         max_module_loc: max_module_loc,
         max_public_funs: max_public_funs,
         min_avg_module_loc: min_avg_module_loc,
+        min_clone_size: min_clone_size,
         enforce: enforce,
         disabled: disabled,
         soft: soft,
