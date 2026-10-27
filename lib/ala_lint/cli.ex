@@ -48,19 +48,28 @@ defmodule AlaLint.CLI do
   ASPIRATIONAL  (reported by default; scored only under --super-strict)
     r11            no logic in a composition layer (the application, and a Features layer,
                    which holds only instances, configuration and wiring, §2.2): branches (guard/logic; `with`,
-                   ok/error routing and `connected?` exempt), arithmetic,
+                   ok/error routing, `connected?`, literal dispatch tables and a case
+                   whose arms only pick a component or navigate exempt), choosing what
+                   runs by a name built at run time, arithmetic,
                    handling data between abstractions, working chains,
                    logic in application templates, assigns handed to a
                    feature's input, store work in page helpers
-    public_surface wide public API (encapsulation) --set public_surface.max=N (default 12)
+                                                 --set r11.calls=wired_only  (default all;
+                                                 wired_only skips hand-offs into a part
+                                                 with no ports/0)
 
   REPORTED ONLY  (never scored by a tier; --enforce CHECK to score one)
     app_share      application-layer share of functions --set app_share.max=F (default 0.20)
+    public_surface a module whose public ports are an outlier in its layer: above
+                   max(floor, Q3 + k×IQR); calibration modules exempt (an R6/R7 prompt)
+                                                 --set public_surface.floor=N (default 10)
+                                                 --set public_surface.iqr=K   (default 1.5)
     module_avg     files averaging under N lines         --set module_size.min_avg=N (default 100)
     clone_inside   the same logic in two functions of one module (R7: an abstraction's interior)
     unassigned     a module matching no layer: the layer-aware checks skip it (loud warning;
                    --require-layers fails the run)
     ports_unwired  a declared output no composer names (a prompt for a coverage test)
+    ports_computed a module emitting a run-time kind, so its declared outputs go unchecked
     wiring_closure a closure over a private page helper in wiring (an R8 prompt)
     r11_share      share of application functions holding logic (not capped like R11)
     hops           a page relaying between LiveComponents (one message hop per effect)

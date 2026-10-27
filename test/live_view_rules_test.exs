@@ -747,3 +747,116 @@ defmodule AlaLint.ApplicationNamesTest do
     refute Enum.any?(msgs, &(&1 =~ "check_out"))
   end
 end
+
+defmodule AlaLint.ComputedKindPortsTest do
+  use ExUnit.Case, async: true
+
+  setup_all do
+    dir = Path.join(System.tmp_dir!(), "ala_lint_kinds_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+
+    File.write!(Path.join(dir, "a.ex"), ~S'''
+    defmodule App.Stories.Listed do
+      def parts, do: %{part: App.State.P}
+      def ports, do: %{in: [go: :event], out: [stock: :item, price: :item]}
+      def input(s, :go, x, out), do: for(kind <- [:stock, :price, :extra], reduce: s, do: (s -> out.(s, {kind, x})))
+    end
+
+    defmodule App.Stories.Attributed do
+      @kinds [:stock, :price]
+      def parts, do: %{part: App.State.P}
+      def ports, do: %{in: [go: :event], out: [stock: :item, price: :item]}
+      def input(s, :go, x, out), do: Enum.reduce(@kinds, s, fn kind, s -> out.(s, {kind, x}) end)
+    end
+
+    defmodule App.Stories.Facts do
+      def parts, do: %{part: App.State.P}
+      def ports, do: %{in: [go: :event], out: [stock: :item, price: :item, gone: :item]}
+
+      def input(s, :go, record, out) do
+        wanted = [:stock]
+        for {kind, fact} <- facts(record), kind in wanted, reduce: s, do: (s -> out.(s, {kind, fact}))
+      end
+
+      defp facts(r), do: [stock: r.stock, price: r.price]
+    end
+
+    defmodule App.Stories.Opaque do
+      def parts, do: %{part: App.State.P}
+      def ports, do: %{in: [go: :event], out: [stock: :item, price: :item]}
+      def input(s, :go, {kind, fact}, out), do: out.(s, {kind, fact})
+    end
+
+    defmodule App.Stories.Mixed do
+      def parts, do: %{part: App.State.P}
+      def ports, do: %{in: [go: :event], out: [stock: :item, price: :item, gone: :item]}
+      def input(s, :go, x, out), do: s |> out.({:stock, x}) |> then(&Enum.reduce([:price], &1, fn k, s -> out.(s, {k, x}) end))
+    end
+
+    defmodule App.Feeds.Feed do
+      def ports, do: %{in: [], out: [product: :product, stock: :stock_change]}
+      def mount(s, facts, out), do: fn {kind, fact}, s -> if(kind in facts, do: out.(s, {kind, fact}), else: s) end
+    end
+    ''')
+
+    layers = [
+      {:app, [~r/^App\.Page$/]},
+      {:feature, [~r/^App\.Stories\./]},
+      {:state, [~r/^App\.State\./, ~r/^App\.Feeds\./]}
+    ]
+
+    {:ok, r: AlaLint.analyze(dir, layers: layers, strict: true)}
+  end
+
+  defp msgs(r, rule, mod),
+    do: for(f <- r.findings, f.rule == rule, f.module == mod, do: f.message)
+
+  test "a kind enumerated from a literal list or a module attribute counts as emitted", %{r: r} do
+    assert msgs(r, :ports, "App.Stories.Listed") == []
+    assert msgs(r, :ports, "App.Stories.Attributed") == []
+    assert msgs(r, :ports_computed, "App.Stories.Listed") == []
+    assert msgs(r, :ports_computed, "App.Stories.Attributed") == []
+  end
+
+  test "a kind enumerated from the keys a same-module function returns counts as emitted", %{r: r} do
+    assert [msg] = msgs(r, :ports, "App.Stories.Facts")
+    assert msg =~ "declares output `gone` but never emits it"
+    assert msgs(r, :ports_computed, "App.Stories.Facts") == []
+  end
+
+  test "an unresolvable kind gives a reported-only note naming the emit, and no \"never emits\"",
+       %{r: r} do
+    assert msgs(r, :ports, "App.Stories.Opaque") == []
+
+    assert [note] =
+             for(
+               f <- r.findings,
+               f.rule == :ports_computed,
+               f.module == "App.Stories.Opaque",
+               do: f
+             )
+
+    assert note.message =~ "a.ex:29"
+    assert note.message =~ "`stock`" and note.message =~ "`price`"
+    assert note.line == 29
+    refute note.rule in AlaLint.Rules.advisory_rules()
+    assert note.severity == :warn
+  end
+
+  test "a module emitting only some outputs literally still gets \"never emits\" for the rest",
+       %{r: r} do
+    assert [msg] = msgs(r, :ports, "App.Stories.Mixed")
+    assert msg =~ "declares output `gone` but never emits it"
+  end
+
+  test "an emit under a kind from a message, outside a composition, isn't \"never emits\"",
+       %{r: r} do
+    assert msgs(r, :ports, "App.Feeds.Feed") == []
+    assert [_] = msgs(r, :ports_computed, "App.Feeds.Feed")
+  end
+
+  test "a ports_computed note is never scored", %{r: r} do
+    assert Enum.any?(r.findings, &(&1.rule == :ports_computed))
+    refute Enum.any?(r.scored_findings, &(&1.rule == :ports_computed))
+  end
+end

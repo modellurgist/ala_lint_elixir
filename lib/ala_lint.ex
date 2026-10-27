@@ -23,6 +23,8 @@ defmodule AlaLint do
 
     * `:config_modules` — module names (strings) treated as the config/manifest
       locus, so their literals are not flagged by R3.
+    * `:r11_calls` — `:all` (default) or `:wired_only`, which leaves out R11's
+      hand-offs into a part that declares no `ports/0` (also `checks: %{r11: [calls: ...]}`).
   """
   def analyze(root \\ "lib", opts \\ []) do
     exclude = Keyword.get(opts, :exclude, [])
@@ -39,11 +41,11 @@ defmodule AlaLint do
 
     # strict promotes the *obtainable* advisory rules to scored (R7, module-size, tramp,
     # height, pass-through, reference-level R1, subscribe). R11 ("no logic at the
-    # top") and public-surface are aspirational purity, scored only under
-    # super-strict. The shared-domain-aggregate check (R10) is scored from --strict
-    # up. The app-layer share and the average module size are reported at every
+    # top") is aspirational purity, scored only under super-strict. The
+    # shared-domain-aggregate check (R10) is scored from --strict up. The app-layer
+    # share, the average module size and the public surface are reported at every
     # tier and scored by none: `checks: %{rule => :scored}` or `--enforce` promotes one.
-    super_strict_only = [:r11, :public_surface]
+    super_strict_only = [:r11]
 
     enforce =
       cond do
@@ -77,7 +79,11 @@ defmodule AlaLint do
     max_height = Keyword.get(opts, :max_height) || Map.get(t, :max_height) || 5
     max_app_share = Keyword.get(opts, :max_app_share) || Map.get(t, :max_app_share) || 0.20
     max_module_loc = Keyword.get(opts, :max_module_loc) || Map.get(t, :max_module_loc) || 500
-    max_public_funs = Keyword.get(opts, :max_public_funs) || Map.get(t, :max_public_funs) || 12
+    # the public-surface floor: no module at or below it is reported, whatever its layer's spread
+    max_public_funs = Keyword.get(opts, :max_public_funs) || Map.get(t, :max_public_funs) || 10
+
+    public_surface_iqr =
+      Keyword.get(opts, :public_surface_iqr) || Map.get(t, :public_surface_iqr) || 1.5
 
     min_avg_module_loc =
       Keyword.get(opts, :min_avg_module_loc) || Map.get(t, :min_avg_module_loc) || 100
@@ -85,6 +91,15 @@ defmodule AlaLint do
     min_clone_size =
       Keyword.get(opts, :min_clone_size) || Map.get(t, :min_clone_size) ||
         AlaLint.Clones.default_min_size()
+
+    r11_calls =
+      case AlaLint.Config.choice(
+             :r11_calls,
+             Keyword.get(opts, :r11_calls) || Map.get(t, :r11_calls) || :all
+           ) do
+        {:ok, calls} -> calls
+        {:error, message} -> raise ArgumentError, message
+      end
 
     layers_spec = Keyword.get(opts, :layers)
 
@@ -98,9 +113,11 @@ defmodule AlaLint do
       |> Map.put(:max_app_share, max_app_share)
       |> Map.put(:max_module_loc, max_module_loc)
       |> Map.put(:max_public_funs, max_public_funs)
+      |> Map.put(:public_surface_iqr, public_surface_iqr)
       |> Map.put(:min_avg_module_loc, min_avg_module_loc)
       |> Map.put(:min_clone_size, min_clone_size)
       |> put_layers(layers_spec)
+      |> put_r11_quiet(r11_calls)
       |> Map.put(:params, %{
         root: root,
         mode: mode,
@@ -108,6 +125,7 @@ defmodule AlaLint do
         max_app_share: max_app_share,
         max_module_loc: max_module_loc,
         max_public_funs: max_public_funs,
+        public_surface_iqr: public_surface_iqr,
         min_avg_module_loc: min_avg_module_loc,
         min_clone_size: min_clone_size,
         enforce: enforce,
@@ -118,6 +136,7 @@ defmodule AlaLint do
         exclude: exclude,
         weights: Rules.weights()
       })
+      |> echo_choice(:r11_calls, r11_calls)
 
     acceptances = AlaLint.Acceptance.scan_roots(root)
 
@@ -129,6 +148,18 @@ defmodule AlaLint do
       |> Enum.split_with(fn f -> Enum.any?(acceptances, &AlaLint.Acceptance.covers?(&1, f)) end)
 
     Report.build(model, findings, accepted, acceptances)
+  end
+
+  defp put_r11_quiet(model, :wired_only),
+    do: Map.put(model, :r11_quiet, Rules.called_parts(model))
+
+  defp put_r11_quiet(model, _all), do: model
+
+  # a reading is echoed only when chosen, so a default run's output is unchanged
+  defp echo_choice(model, param, value) do
+    if value == AlaLint.Config.default_choice(param),
+      do: model,
+      else: put_in(model, [:params, param], value)
   end
 
   defp put_layers(model, nil), do: Map.put(model, :layers, nil)

@@ -37,6 +37,60 @@ defmodule AlaLint.Template do
     attrs ++ nodes
   end
 
+  @doc """
+  Lines of `<%= case ... do %>` blocks that only route: every arm's pattern is a literal (or `_`)
+  and its markup places components and nothing else (`<.view ... />`, `<.live_component ... />`).
+  Attribute expressions inside those tags are still scanned as expressions.
+  """
+  def routing_case_lines(text) do
+    tags =
+      for [{at, len}, {b, bl}] <- Regex.scan(~r/<%(?!!--)=?(.*?)%>/s, text, return: :index),
+          do: {at, at + len, String.trim(binary_part(text, b, bl))}
+
+    for {{at, _to, src}, i} <- Enum.with_index(tags),
+        String.match?(src, ~r/^case\b.*\bdo$/s),
+        routing_arms?(text, Enum.drop(tags, i)),
+        do: count_lines(text, at)
+  end
+
+  defp routing_arms?(text, [{_, opened_at, _} | rest]), do: arms(text, opened_at, rest, 0)
+
+  defp arms(text, from, [{at, _to, "end"} | _], n),
+    do: n > 0 and components_only?(binary_part(text, from, at - from))
+
+  defp arms(text, from, [{at, to, src} | rest], n) do
+    segment = binary_part(text, from, at - from)
+
+    with [_, pattern] <- Regex.run(~r/^(.+?)\s*->$/s, src),
+         true <- literal_pattern?(pattern),
+         true <- if(n == 0, do: String.trim(segment) == "", else: components_only?(segment)) do
+      arms(text, to, rest, n + 1)
+    else
+      _ -> false
+    end
+  end
+
+  defp arms(_text, _from, [], _n), do: false
+
+  defp literal_pattern?(src) do
+    case Code.string_to_quoted(src, emit_warnings: false) do
+      {:ok, lit} when is_atom(lit) or is_binary(lit) or is_number(lit) -> true
+      {:ok, {:_, _, ctx}} when is_atom(ctx) -> true
+      _ -> false
+    end
+  end
+
+  defp components_only?(markup) do
+    markup
+    |> strip_braces()
+    |> String.match?(~r/^\s*(<\/?[.:][\w.:-]*(\s[^<>]*)?\/?>\s*)*$/s)
+  end
+
+  defp strip_braces(markup) do
+    stripped = String.replace(markup, ~r/\{[^{}]*\}/, "")
+    if stripped == markup, do: markup, else: strip_braces(stripped)
+  end
+
   defp readable?(s), do: String.match?(s, ~r/[A-Za-z]{2,}/)
 
   defp line_of(text, fragment) do

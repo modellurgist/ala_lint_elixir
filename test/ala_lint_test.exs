@@ -891,7 +891,7 @@ defmodule AlaLintTest do
     File.rm_rf!(dir)
   end
 
-  test "public_surface flags a wide public API, only under super-strict, and spares an encapsulated module" do
+  test "public_surface reports a wide public API, scores it at no tier, and spares an encapsulated module" do
     dir = Path.join(System.tmp_dir!(), "ala_ps_#{System.unique_integer([:positive])}")
     File.mkdir_p!(dir)
 
@@ -907,6 +907,9 @@ defmodule AlaLintTest do
       defp h1(x), do: h2(x)
       defp h2(x), do: x
     end
+    defmodule S1, do: def(s(x), do: x)
+    defmodule S2, do: def(s(x), do: x)
+    defmodule S3, do: def(s(x), do: x)
     """)
 
     r = AlaLint.analyze(dir, max_public_funs: 2)
@@ -917,7 +920,8 @@ defmodule AlaLintTest do
            "public_surface is not scored by strict"
 
     ss = AlaLint.analyze(dir, max_public_funs: 2, super_strict: true)
-    assert Enum.any?(ss.scored_findings, &(&1.rule == :public_surface)), "super-strict scores it"
+    assert Enum.any?(ss.advisory_findings, &(&1.rule == :public_surface and &1.message =~ "Wide"))
+    refute Enum.any?(ss.scored_findings, &(&1.rule == :public_surface)), "nor by super-strict"
     File.rm_rf!(dir)
   end
 

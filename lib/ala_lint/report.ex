@@ -352,9 +352,9 @@ defmodule AlaLint.Report do
 
     Parameters (effective — defaults unless overridden):
       root:           #{params[:root]}
-      max_height:     #{params[:max_height]}   max_module_loc: #{params[:max_module_loc]}   max_public_funs: #{params[:max_public_funs]}   app_share: #{params[:max_app_share]}   min_avg_module_loc: #{params[:min_avg_module_loc]}   clone.min: #{params[:min_clone_size]}
+      max_height:     #{params[:max_height]}   max_module_loc: #{params[:max_module_loc]}   public_surface: floor #{params[:max_public_funs]}, #{params[:public_surface_iqr]}×IQR   app_share: #{params[:max_app_share]}   min_avg_module_loc: #{params[:min_avg_module_loc]}   clone.min: #{params[:min_clone_size]}
       enforce:        #{enforce}#{integrity}
-      layers:         #{params[:layers]}
+      layers:         #{params[:layers]}#{if params[:r11_calls], do: "\n  r11.calls:      #{params[:r11_calls]}"}
       config_modules: #{fmt_list(params[:config_modules])}
       exclude:        #{fmt_list(params[:exclude])}
       weights:        #{weights}

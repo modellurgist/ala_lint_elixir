@@ -35,6 +35,7 @@ defmodule AlaLint.Rules do
     layer: 3,
     ports: 2,
     ports_unwired: 1,
+    ports_computed: 1,
     wiring_closure: 1,
     r11_share: 1,
     hops: 1,
@@ -48,10 +49,11 @@ defmodule AlaLint.Rules do
   def weights, do: @weights
 
   # Advisory rules that a strict mode promotes to scored. `--strict` promotes the
-  # obtainable ones; R11 and public_surface are aspirational and promoted only by
-  # `--super-strict` (see AlaLint.analyze). Not listed, so never promoted by a
-  # tier (only by `--enforce`): app_share and module_avg (ratios that penalise an
-  # app for having many pages or small single-function abstractions). Since
+  # obtainable ones; R11 is aspirational and promoted only by `--super-strict` (see
+  # AlaLint.analyze). Not listed, so never promoted by a tier (only by `--enforce`):
+  # app_share and module_avg (ratios that penalise an app for having many pages or
+  # small single-function abstractions), and since 2026-10-21 public_surface (a
+  # prompt for R6/R7 judgement that runs had treated as a gate). Since
   # 2026-10-03 r10_aggregate is scored by `--strict`: Spray's shared entity
   # (§6.17.2) read strictly, a domain struct several features read. `clone` (duplicated logic)
   # joined on 2026-10-19 at the same tier: agents met the other checks by copying logic. Its
@@ -63,7 +65,6 @@ defmodule AlaLint.Rules do
     :height,
     :passthrough,
     :tramp,
-    :public_surface,
     :r1_ref,
     :subscribe,
     :ports,
@@ -95,6 +96,7 @@ defmodule AlaLint.Rules do
     r10_aggregate: :warn,
     ports: :warn,
     ports_unwired: :warn,
+    ports_computed: :warn,
     wiring_closure: :warn,
     r11_share: :info,
     hops: :info,
@@ -487,6 +489,7 @@ defmodule AlaLint.Rules do
 
     size ++
       branches ++
+      run_time_names(model, app_id_set) ++
       computes ++
       iterates ++
       handles_data(model, app_id_set) ++
@@ -494,6 +497,121 @@ defmodule AlaLint.Rules do
   end
 
   def r11(_model), do: []
+
+  @doc """
+  Project modules below the application that declare no `ports/0`: under `r11.calls=wired_only`
+  these are parts a page calls for a value (ALA subset 3), so a hand-off into one is the design.
+  """
+  def called_parts(%{layers: %{index: idx, app_layers: app}} = model) do
+    for m <- model.modules,
+        (i = idx[m.name]) != nil and not MapSet.member?(app, i),
+        not Enum.any?(m.functions, &(&1.name == :ports and &1.arity == 0)),
+        into: MapSet.new(),
+        do: m.name
+  end
+
+  def called_parts(_model), do: MapSet.new()
+
+  # The hidden form of a branch (checklist reading of R11, 2026-10-21): what runs is picked by a
+  # name built from a run-time value, so the alternatives are invisible to a reader and to the
+  # branch check. A literal table from each state to its component or handler is the honest form.
+  defp run_time_names(model, app_id_set) do
+    for m <- model.modules,
+        {{name, arity}, clauses} <- Enum.group_by(m.functions, &{&1.name, &1.arity}),
+        MapSet.member?(app_id_set, {m.name, name, arity}),
+        clause = Enum.find(clauses, &(built_name(&1.body) != nil)),
+        clause != nil do
+      how = built_name(clause.body)
+
+      f(
+        :r11,
+        m.name,
+        model,
+        m,
+        clause.line,
+        "#{short(m.name)}.#{name}/#{arity} chooses what runs by a name built at run time (#{how}) — the same branch as a `case`, hidden from a reader; pick from a literal table (a map from each state to its component or handler) instead (R11)"
+      )
+    end
+  end
+
+  # How a body picks a callee by a run-time name, or nil. Calling a configured function
+  # (`fun.(x)`, `apply(fun, args)`) is wiring and is not counted.
+  defp built_name(nil), do: nil
+
+  defp built_name(body) do
+    built_vars = name_built_vars(body)
+    built? = &(name_builder(&1) != nil or built_var?(&1, built_vars))
+
+    {_, how} =
+      Macro.prewalk(body, nil, fn
+        node, nil -> {node, name_sink(node, built?)}
+        node, acc -> {node, acc}
+      end)
+
+    how
+  end
+
+  defp name_sink({:|>, _, [subject, {fun, meta, args}]}, built?)
+       when fun in [:apply] and is_list(args),
+       do: name_sink({fun, meta, [subject | args]}, built?)
+
+  defp name_sink({:apply, _, [mod, fun, _args]}, _built?), do: dynamic_mfa("apply/3", mod, fun)
+
+  defp name_sink({{:., _, [{:__aliases__, _, [mod]}, fun]}, _, [m, f, _]}, _built?)
+       when {mod, fun} in [{:Kernel, :apply}, {:Function, :capture}],
+       do: dynamic_mfa("#{mod}.#{fun}/3", m, f)
+
+  defp name_sink({{:., _, [receiver, _fun]}, _, args}, built?) when is_list(args) do
+    if built?.(receiver),
+      do: "a call on a module from #{name_builder(receiver) || "a built name"}"
+  end
+
+  defp name_sink(_node, _built?), do: nil
+
+  defp dynamic_mfa(form, mod, fun) do
+    cond do
+      not literal_module?(mod) -> "#{form} with a run-time module"
+      not is_atom(fun) -> "#{form} with a run-time function"
+      true -> nil
+    end
+  end
+
+  defp literal_module?({:__aliases__, _, _}), do: true
+  defp literal_module?({:__MODULE__, _, ctx}) when is_atom(ctx), do: true
+  defp literal_module?(mod), do: is_atom(mod)
+
+  defp name_builder({{:., _, [{:__aliases__, _, [:String]}, fun]}, _, _})
+       when fun in [:to_atom, :to_existing_atom],
+       do: "String.#{fun}"
+
+  defp name_builder({{:., _, [{:__aliases__, _, [:Module]}, fun]}, _, _})
+       when fun in [:concat, :safe_concat],
+       do: "Module.#{fun}"
+
+  # `:"step_#{s}"` compiles to this
+  defp name_builder({{:., _, [:erlang, fun]}, _, _})
+       when fun in [:binary_to_atom, :binary_to_existing_atom],
+       do: "an interpolated atom"
+
+  defp name_builder(_), do: nil
+
+  defp name_built_vars(body) do
+    {_, vars} =
+      Macro.prewalk(body, MapSet.new(), fn
+        {:=, _, [{var, _, ctx}, rhs]} = node, acc when is_atom(var) and is_atom(ctx) ->
+          {node, if(name_builder(rhs), do: MapSet.put(acc, var), else: acc)}
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    vars
+  end
+
+  defp built_var?({var, _, ctx}, vars) when is_atom(var) and is_atom(ctx),
+    do: MapSet.member?(vars, var)
+
+  defp built_var?(_, _vars), do: false
 
   # where a composition finding sits; a feature that holds logic is told what Spray's features hold
   defp composing_layer(%{layers: %{index: idx, app_layers: app}}, name) do
@@ -519,6 +637,7 @@ defmodule AlaLint.Rules do
   # which is composition, and statically a pipe of stages looks the same as a pipe of values.
   defp passes_through(model, app_id_set) do
     %{index: idx} = model.layers
+    quiet = Map.get(model, :r11_quiet, MapSet.new())
 
     for m <- model.modules,
         {{name, arity}, clauses} <- Enum.group_by(m.functions, &{&1.name, &1.arity}),
@@ -529,7 +648,8 @@ defmodule AlaLint.Rules do
             i -> i > idx[m.name]
           end
         end,
-        {from, to} <- [Enum.find_value(clauses, &nested_lower(&1.body, m, model, lower))],
+        into = &(lower.(&1) and not MapSet.member?(quiet, &1)),
+        {from, to} <- [Enum.find_value(clauses, &nested_lower(&1.body, m, model, lower, into))],
         from != nil do
       f(
         :r11,
@@ -542,13 +662,13 @@ defmodule AlaLint.Rules do
     end
   end
 
-  defp nested_lower(nil, _m, _model, _lower), do: nil
+  defp nested_lower(nil, _m, _model, _lower, _into), do: nil
 
-  defp nested_lower(body, m, model, lower) do
+  defp nested_lower(body, m, model, lower, into) do
     {_, found} =
       Macro.prewalk(body, nil, fn
         node, nil ->
-          {node, nested_pair(node, m, model, lower)}
+          {node, nested_pair(node, m, model, lower, into)}
 
         node, acc ->
           {node, acc}
@@ -557,12 +677,12 @@ defmodule AlaLint.Rules do
     found
   end
 
-  defp nested_pair({:|>, _, _}, _m, _model, _lower), do: nil
+  defp nested_pair({:|>, _, _}, _m, _model, _lower, _into), do: nil
 
-  defp nested_pair({{:., _, [{:__aliases__, _, _}, _]}, _, args} = node, m, model, lower)
+  defp nested_pair({{:., _, [{:__aliases__, _, _}, _]}, _, args} = node, m, model, lower, into)
        when is_list(args) do
     with to when to != nil <- remote_target(node, m, model),
-         true <- lower.(to) do
+         true <- into.(to) do
       Enum.find_value(args, fn arg ->
         from = if constructor?(arg), do: nil, else: remote_target(arg, m, model)
         if from != nil and lower.(from) and from != to, do: {from, to}
@@ -572,7 +692,7 @@ defmodule AlaLint.Rules do
     end
   end
 
-  defp nested_pair(_node, _m, _model, _lower), do: nil
+  defp nested_pair(_node, _m, _model, _lower, _into), do: nil
 
   # Building an instance inside another's configuration (`Adapter.new(Cart, Cart.new(...))`) is
   # instantiation, Spray's `WireIn(new Filter(...))`, not a hand-off of run-time data.
@@ -585,6 +705,7 @@ defmodule AlaLint.Rules do
   # A result bound and merely stored (assign, a struct update) is holding, not handling.
   defp handles_data(model, app_id_set) do
     %{index: idx} = model.layers
+    quiet = Map.get(model, :r11_quiet, MapSet.new())
 
     for m <- model.modules,
         fun <- m.functions,
@@ -592,7 +713,14 @@ defmodule AlaLint.Rules do
         lower = fn mod -> (i = idx[mod]) != nil and i > idx[m.name] end,
         {var, from} <- bound_from_lower(fun.body, m, model, lower),
         # building an instance and then using it with its own module is configuration, not handling
-        to = passed_to_lower(fun.body, var, m, model, &(lower.(&1) and &1 != from)),
+        to =
+          passed_to_lower(
+            fun.body,
+            var,
+            m,
+            model,
+            &(lower.(&1) and &1 != from and not MapSet.member?(quiet, &1))
+          ),
         to != nil do
       f(
         :r11,
@@ -727,8 +855,8 @@ defmodule AlaLint.Rules do
         {form, _, [cond_expr | _]} = node, acc when form in [:if, :unless] ->
           {node, [branch_kind(cond_expr) | acc]}
 
-        {:case, _, [_subject, [do: arms]]} = node, acc when is_list(arms) ->
-          {node, [case_kind(arms) | acc]}
+        {:case, _, [subject, [do: arms]]} = node, acc when is_list(arms) ->
+          {node, [case_kind(subject, arms) | acc]}
 
         {:cond, _, _} = node, acc ->
           {node, ["logic" | acc]}
@@ -752,16 +880,47 @@ defmodule AlaLint.Rules do
   defp guard_test?({:not, _, [inner]}), do: guard_test?(inner)
   defp guard_test?(_), do: false
 
-  defp case_kind(arms) do
+  defp case_kind(subject, arms) do
     patterns = for {:->, _, [[pat], _]} <- arms, do: pat
     bodies = for {:->, _, [_, body]} <- arms, do: body
 
+    # `nil ->` and `true ->`/`false ->` arms are an `if` spelled as a `case`, so they read as one
     cond do
       Enum.any?(bodies, &computes?/1) -> "logic"
+      nil in patterns -> "guard"
+      true in patterns or false in patterns -> branch_kind(subject)
       Enum.all?(patterns, &outcome_pattern?/1) -> "route"
+      Enum.all?(patterns, &step_pattern?/1) and Enum.all?(bodies, &picks?/1) -> "route"
       true -> "logic"
     end
   end
+
+  # A closed dispatch on a step value is routing when each arm only picks what to show: a
+  # component, a render, a navigation (checklist reading of R11, 2026-10-21).
+  defp step_pattern?(lit) when is_binary(lit) or is_number(lit), do: true
+  defp step_pattern?(pat), do: outcome_pattern?(pat)
+
+  @pick_calls [
+    :render,
+    :live_render,
+    :live_component,
+    :component,
+    :push_navigate,
+    :push_patch,
+    :redirect
+  ]
+  defp picks?(lit) when is_atom(lit) or is_binary(lit), do: true
+  defp picks?({:__aliases__, _, _}), do: true
+  defp picks?({:__MODULE__, _, ctx}) when is_atom(ctx), do: true
+  defp picks?({:&, _, _}), do: true
+  defp picks?({:sigil_H, _, _}), do: true
+  defp picks?({tag, inner}) when is_atom(tag), do: picks?(inner)
+  defp picks?({fun, _, args}) when fun in @pick_calls and is_list(args), do: true
+  defp picks?({{:., _, [_, fun]}, _, args}) when fun in @pick_calls and is_list(args), do: true
+  # a function component given the assigns it renders
+  defp picks?({fun, _, [{:assigns, _, ctx}]}) when is_atom(fun) and is_atom(ctx), do: true
+  defp picks?({{:., _, [_, _]}, _, [{:assigns, _, ctx}]}) when is_atom(ctx), do: true
+  defp picks?(_), do: false
 
   defp outcome_pattern?({tag, _}) when tag in [:ok, :error], do: true
   defp outcome_pattern?({:{}, _, [tag | _]}) when tag in [:ok, :error], do: true
@@ -772,11 +931,12 @@ defmodule AlaLint.Rules do
 
   @arith [:+, :-, :*, :/, :div, :rem]
   # Arithmetic on values (not a literal-only constant like `60 * 60`) in a body. A
-  # `&Mod.fun/arity` capture is not a division, so captures are not walked.
+  # `&Mod.fun/arity` capture is not a division, so named captures are not walked; a
+  # shorthand function (`&(&1 * rate)`) is.
   defp computes?(body) do
     {_, found} =
       Macro.prewalk(body, false, fn
-        {:&, meta, _}, acc ->
+        {:&, meta, [{:/, _, [_, arity]}]}, acc when is_integer(arity) ->
           {{:&, meta, []}, acc}
 
         {op, _, [a, b]} = node, acc when op in @arith ->
@@ -837,32 +997,146 @@ defmodule AlaLint.Rules do
     end
   end
 
-  # ── Public surface (advisory). A little ball of mud is fine when its mess is
-  # *encapsulated*: a small public surface over a private bulk. A module that
-  # exposes many public functions is letting peers depend on its internals, so
-  # its boundary is fiction. Counts public `def`s per module against a cap. A
-  # rough proxy for encapsulation (Elixir has no package-private, so wide API
-  # is sometimes legitimate); tune with `--max-public-funs`, default 12. ──────
+  # ── Public surface (report only, never scored by a tier). A little ball of mud is fine when its
+  # mess is encapsulated behind a small public surface. Spray gives no count ("abstractness
+  # decreases with more ports", §7.2.3), so a module is reported only when its port count is an
+  # outlier among its own layer's modules: above max(floor, Q3 + k × IQR). It prompts the R6/R7
+  # judgement; it is not a gate. ──────────────────────────────────────────────────────────────
   def public_surface(model) do
-    max = Map.get(model, :max_public_funs, 12)
+    floor = Map.get(model, :max_public_funs, 10)
+    k = Map.get(model, :public_surface_iqr, 1.5)
 
-    for m <- model.modules,
-        publics =
-          m.functions
-          |> Enum.reject(& &1.private)
-          |> Enum.uniq_by(&{&1.name, &1.arity})
-          |> length(),
-        publics > max do
-      f(
-        :public_surface,
-        m.name,
-        model,
-        m,
-        m.line,
-        "module #{short(m.name)} exposes #{publics} public functions (> #{max}) — a wide public surface leaks internals; keep the mess private behind a small boundary, and confirm this is one concept (R6/R7-adjacent)"
-      )
-    end
+    model.modules
+    |> Enum.reject(&calibration?/1)
+    |> Enum.map(&{&1, &1 |> public_ports() |> Map.values() |> Enum.sum()})
+    |> Enum.filter(fn {_m, n} -> n > 0 end)
+    |> Enum.group_by(fn {m, _n} -> layer_index(model, m.name) end)
+    |> Enum.flat_map(fn {_layer, group} ->
+      {q1, q3} = quartiles(Enum.map(group, &elem(&1, 1)))
+      limit = max(floor, q3 + k * (q3 - q1))
+
+      for {m, n} <- group, n > limit do
+        f(
+          :public_surface,
+          m.name,
+          model,
+          m,
+          m.line,
+          "module #{short(m.name)} exposes #{n} public ports, an outlier in its layer (limit #{fmt_num(limit)} = max(floor #{floor}, Q3 #{fmt_num(q3)} + #{fmt_num(k)} × IQR #{fmt_num(q3 - q1)})) — a wide public surface leaks internals; keep the mess private behind a small boundary, and confirm this is one concept (R6/R7 prompt, reported only)"
+        )
+      end
+    end)
   end
+
+  @doc """
+  Input ports per public function, `%{{name, arity} => count}`. A function is one port, except
+  that clauses matching distinct map or struct shapes in the same argument are one port per
+  shape (`set_product(l, %{stock: _})` and `set_product(l, %{amount: _})` are two). Shapes are
+  compared only among clauses with the same literal arguments: under an event name
+  (`handle_event("ship", %{"method" => m}, s)`) the shape is that event's payload.
+  """
+  def public_ports(m) do
+    m.functions
+    |> Enum.reject(& &1.private)
+    |> Enum.group_by(&{&1.name, &1.arity})
+    |> Map.new(fn {id, clauses} -> {id, shape_ports(clauses)} end)
+  end
+
+  defp shape_ports(clauses) do
+    clauses
+    |> Enum.map(& &1.params)
+    |> Enum.group_by(fn params -> Enum.map(params, &literal_selector/1) end)
+    |> Enum.map(fn {_literals, group} -> distinct_shapes(group) end)
+    |> Enum.max()
+  end
+
+  defp literal_selector(param) do
+    if shape(param) == nil and literal?(param), do: Macro.to_string(param), else: :_
+  end
+
+  defp distinct_shapes(param_lists) do
+    param_lists
+    |> Enum.zip_with(& &1)
+    |> Enum.map(fn column ->
+      column |> Enum.map(&shape/1) |> Enum.reject(&is_nil/1) |> Enum.uniq()
+    end)
+    |> Enum.map(&length/1)
+    |> Enum.max(fn -> 1 end)
+    |> max(1)
+  end
+
+  defp shape({:=, _, [a, b]}), do: shape(a) || shape(b)
+  defp shape({:%, _, [name, _]}), do: {:struct, Macro.to_string(name)}
+
+  defp shape({:%{}, _, pairs}) do
+    keys = for {k, _} <- pairs, is_atom(k) or is_binary(k), do: k
+    if keys != [], do: {:map, Enum.sort(keys)}
+  end
+
+  defp shape(_), do: nil
+
+  # A table of the store's values (Spray's configuration, gathered at the composition): every
+  # public clause returns a literal, a module attribute, or a value picked from a literal table
+  # by a key argument. It is not an abstraction with ports, so public_surface leaves it out.
+  defp calibration?(m) do
+    publics = for fun <- m.functions, not fun.private, fun.body != nil, do: fun
+
+    publics != [] and
+      Enum.all?(publics, fn fun ->
+        calibration_value?(fun.body) and Enum.all?(fun.params, &key_param?/1)
+      end)
+  end
+
+  defp key_param?({name, _, ctx}) when is_atom(name) and is_atom(ctx), do: true
+  defp key_param?(p), do: literal?(p)
+
+  defp calibration_value?({:case, _, [{v, _, ctx}, [do: arms]]}) when is_atom(v) and is_atom(ctx),
+    do: Enum.all?(arms, fn {:->, _, [[pat], body]} -> key_param?(pat) and literal?(body) end)
+
+  defp calibration_value?({{:., _, [{:__aliases__, _, [mod]}, fun]}, _, [table, key | default]})
+       when mod in [:Map, :Keyword] and fun in [:fetch!, :get],
+       do: literal?(table) and key_param?(key) and Enum.all?(default, &literal?/1)
+
+  defp calibration_value?({{:., _, [Access, :get]}, _, [table, key]}),
+    do: literal?(table) and key_param?(key)
+
+  defp calibration_value?(body), do: literal?(body)
+
+  defp literal?(v) when is_number(v) or is_binary(v) or is_atom(v), do: true
+  defp literal?(list) when is_list(list), do: Enum.all?(list, &literal?/1)
+  defp literal?({a, b}), do: literal?(a) and literal?(b)
+  defp literal?({:{}, _, elems}), do: literal?(elems)
+  defp literal?({:%{}, _, pairs}), do: literal?(pairs)
+  defp literal?({:%, _, [_name, map]}), do: literal?(map)
+  defp literal?({:-, _, [n]}) when is_number(n), do: true
+  defp literal?({:@, _, [{name, _, ctx}]}) when is_atom(name) and is_atom(ctx), do: true
+  defp literal?({:__aliases__, _, _}), do: true
+  defp literal?({:<<>>, _, parts}), do: Enum.all?(parts, &is_binary/1)
+
+  defp literal?({sigil, _, [str, _mods]}) when sigil in [:sigil_w, :sigil_s, :sigil_S],
+    do: literal?(str)
+
+  defp literal?(_), do: false
+
+  defp layer_index(%{layers: %{index: idx}}, name), do: idx[name]
+  defp layer_index(_model, _name), do: :all
+
+  # Q1 and Q3 by linear interpolation between closest ranks (as numpy and Excel's QUARTILE.INC).
+  defp quartiles(values) do
+    sorted = values |> Enum.sort() |> List.to_tuple()
+    at = fn p -> rank(sorted, (tuple_size(sorted) - 1) * p) end
+    {at.(0.25), at.(0.75)}
+  end
+
+  defp rank(sorted, pos) do
+    lo = floor(pos)
+    hi = min(lo + 1, tuple_size(sorted) - 1)
+    elem(sorted, lo) + (pos - lo) * (elem(sorted, hi) - elem(sorted, lo))
+  end
+
+  defp fmt_num(n) when is_integer(n), do: Integer.to_string(n)
+  defp fmt_num(n) when n == trunc(n), do: Integer.to_string(trunc(n))
+  defp fmt_num(n), do: :erlang.float_to_binary(n * 1.0, decimals: 2) |> String.trim_trailing("0")
 
   # Recall companion to the function-level R1 (advisory). Function-level R1 sees
   # only real Elixir calls, so a cross-feature call embedded in a `~H` template

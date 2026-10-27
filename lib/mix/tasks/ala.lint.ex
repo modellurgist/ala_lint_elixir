@@ -27,7 +27,7 @@ defmodule Mix.Tasks.Ala.Lint do
   Common:
     --min-score N        exit non-zero if the score is below N (the CI gate)
     --strict             score the obtainable advisory checks (R7, module-size, height, pass-through, R1-ref)
-    --super-strict       --strict, plus the aspirational checks (R11, public-surface, R10-aggregate)
+    --super-strict       --strict, plus the aspirational check (R11)
     --layers-module MOD  a module exporting layers/0 → layer-aware R1/R3/R10/R11 + coverage
     --require-layers     exit non-zero if any module matches no layer (the layer-aware checks skip it)
     --limit N            show up to N findings (default 40)
@@ -48,7 +48,9 @@ defmodule Mix.Tasks.Ala.Lint do
     --enforce CHECK      promote one advisory check to scored (repeatable)
     --disable CHECK      turn one check off entirely (repeatable)
     --set KEY=VALUE      set a threshold (repeatable): height.max, module_size.max,
-                         public_surface.max, app_share.max, clone.min, min_score
+                         public_surface.floor, public_surface.iqr, app_share.max,
+                         clone.min, min_score; or pick a reading: r11.calls=wired_only
+                         leaves out R11's hand-offs into a part with no ports/0
     --config-module MOD  treat MOD as a config/manifest locus for R3 (repeatable)
 
   Durable settings belong in a `.ala_lint.exs` map at the project root
@@ -109,6 +111,7 @@ defmodule Mix.Tasks.Ala.Lint do
     )
 
     min_score = sets[:min_score] || opts[:min_score] || Map.get(file, :min_score)
+    r11_calls = r11_calls!(sets, file)
 
     threshold_opts =
       sets
@@ -117,6 +120,7 @@ defmodule Mix.Tasks.Ala.Lint do
         :max_app_share,
         :max_module_loc,
         :max_public_funs,
+        :public_surface_iqr,
         :min_avg_module_loc,
         :min_clone_size
       ])
@@ -132,7 +136,7 @@ defmodule Mix.Tasks.Ala.Lint do
         exclude: Map.get(file, :exclude, []),
         strict: opts[:strict] || false,
         super_strict: opts[:super_strict] || false
-      ] ++ threshold_opts
+      ] ++ threshold_opts ++ if(r11_calls, do: [r11_calls: r11_calls], else: [])
 
     report = AlaLint.analyze(roots, analyze_opts)
 
@@ -164,6 +168,23 @@ defmodule Mix.Tasks.Ala.Lint do
 
       min ->
         Mix.shell().info("ok — score #{report.score} meets --min-score #{min}")
+    end
+  end
+
+  # A reading is a word, not a number, so a typo would silently change what R11 reports: fail instead.
+  defp r11_calls!(sets, file) do
+    file_calls =
+      AlaLint.Config.normalize_checks(Map.get(file, :checks, %{})).thresholds[:r11_calls]
+
+    case sets[:r11_calls] || file_calls do
+      nil ->
+        nil
+
+      value ->
+        case AlaLint.Config.choice(:r11_calls, value) do
+          {:ok, calls} -> calls
+          {:error, message} -> Mix.raise(message, exit_status: 2)
+        end
     end
   end
 

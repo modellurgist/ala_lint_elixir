@@ -15,8 +15,9 @@ defmodule AlaLint.Config do
         checks: %{
           r7: :off,                       # off | advisory | scored
           height: [level: :scored, max: 4],
-          public_surface: [max: 15],
-          module_size: [max: 400]
+          public_surface: [max: 8],          # the floor under the outlier test
+          module_size: [max: 400],
+          r11: [level: :advisory, calls: :wired_only]   # calls: all | wired_only
         }
       }
 
@@ -31,11 +32,17 @@ defmodule AlaLint.Config do
     "height.max" => :max_height,
     "module_size.max" => :max_module_loc,
     "module_size.min_avg" => :min_avg_module_loc,
+    "public_surface.floor" => :max_public_funs,
+    # the floor's older name, from when it was a fixed cap
     "public_surface.max" => :max_public_funs,
+    "public_surface.iqr" => :public_surface_iqr,
     "app_share.max" => :max_app_share,
     "clone.min" => :min_clone_size,
     "min_score" => :min_score
   }
+
+  # settings that pick a reading rather than a number; the first choice is the default
+  @choices %{r11_calls: [:all, :wired_only]}
 
   @doc "Load `.ala_lint.exs` from `dir` (default cwd) into a map; `%{}` if absent or invalid."
   def load(dir \\ ".") do
@@ -64,12 +71,15 @@ defmodule AlaLint.Config do
       acc
       |> add_level(rule, level)
       |> add_threshold(rule, max)
+      |> add_calls(rule, spec)
     end)
   end
 
   def normalize_checks(_), do: %{disabled: [], soft: [], scored: [], thresholds: %{}}
 
   @doc "Parse a `--set key=value` string into `{param_atom, typed_value}` or `:error`."
+  def parse_set("r11.calls=" <> val), do: {:r11_calls, val}
+
   def parse_set(str) do
     with [key, val] <- String.split(str, "=", parts: 2),
          param when not is_nil(param) <- Map.get(@threshold_keys, key) do
@@ -80,7 +90,29 @@ defmodule AlaLint.Config do
   end
 
   @doc "The `--set` keys the tool understands (for help / --list-checks)."
-  def set_keys, do: Map.keys(@threshold_keys)
+  def set_keys, do: Map.keys(@threshold_keys) ++ ["r11.calls"]
+
+  @doc """
+  Check a reading (`:r11_calls`) given as an atom or a `--set` string: `{:ok, atom}`, or
+  `{:error, message}` naming the choices.
+  """
+  def choice(param, value) do
+    choices = Map.fetch!(@choices, param)
+
+    case Enum.find(choices, &(to_string(&1) == to_string(value))) do
+      nil ->
+        {:error,
+         "unknown #{set_name(param)} value #{inspect(value)} (one of: #{Enum.join(choices, ", ")})"}
+
+      found ->
+        {:ok, found}
+    end
+  end
+
+  @doc "The default of a reading, which the parameter echo leaves out."
+  def default_choice(param), do: @choices |> Map.fetch!(param) |> hd()
+
+  def set_name(:r11_calls), do: "r11.calls"
 
   # ── helpers ──────────────────────────────────────────────────────────
   defp split_spec(level) when level in [:off, :advisory, :scored], do: {level, nil}
@@ -104,6 +136,15 @@ defmodule AlaLint.Config do
     end
   end
 
+  defp add_calls(acc, :r11, spec) when is_list(spec) do
+    case Keyword.fetch(spec, :calls) do
+      {:ok, calls} -> %{acc | thresholds: Map.put(acc.thresholds, :r11_calls, calls)}
+      :error -> acc
+    end
+  end
+
+  defp add_calls(acc, _rule, _spec), do: acc
+
   defp rule_param(:height), do: :max_height
   defp rule_param(:module_size), do: :max_module_loc
   defp rule_param(:public_surface), do: :max_public_funs
@@ -113,7 +154,7 @@ defmodule AlaLint.Config do
   defp rule_param(:clone), do: :min_clone_size
   defp rule_param(_), do: nil
 
-  defp cast(:max_app_share, v), do: parse_float(v)
+  defp cast(param, v) when param in [:max_app_share, :public_surface_iqr], do: parse_float(v)
   defp cast(_, v), do: parse_int(v)
 
   defp parse_int(v), do: with({n, ""} <- Integer.parse(v), do: n, else: (_ -> nil))

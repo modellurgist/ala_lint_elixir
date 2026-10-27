@@ -89,9 +89,11 @@ defmodule AlaLint.LiveViewRules do
     for m <- model.modules,
         composes?(model, m.name),
         {base, text} <- m.templates,
+        routing = Template.routing_case_lines(text),
         {line, attr, src} <- Template.expressions(text),
         reason = logic_reason(model, m, attr, src),
-        reason != nil do
+        reason != nil,
+        not (reason == "uses `case`" and line in routing) do
       finding(
         :r11,
         m.name,
@@ -151,10 +153,11 @@ defmodule AlaLint.LiveViewRules do
           {node, acc}
 
         {{:., _, [{:__aliases__, _, parts}, fun]}, _, _} = node, acc ->
-          case project_target(model, m, parts) do
-            nil -> {node, acc}
-            target -> {node, ["calls #{short(target)}.#{fun}" | acc]}
-          end
+          target = project_target(model, m, parts)
+
+          if target == nil or quiet?(model, target),
+            do: {node, acc},
+            else: {node, ["calls #{short(target)}.#{fun}" | acc]}
 
         node, acc ->
           {node, acc}
@@ -310,10 +313,19 @@ defmodule AlaLint.LiveViewRules do
         {emitted, built} =
           if composition_with_parts?(m),
             do: {sent_ports(m), sent_ports(m)},
-            else: {emitted_ports(m), any_keyword_keys(m)}
+            else: {emitted_ports(m), MapSet.union(any_keyword_keys(m), sent_ports(m))}
+
+        # a computed kind only ever accounts for declared outputs; it never makes one undeclared
+        computed = computed_kinds(m, asts[m.file])
+
+        resolved =
+          for {_, {:ok, kinds}} <- computed, reduce: built, do: (a -> MapSet.union(a, kinds))
+
+        unresolved = for {line, :unknown} <- computed, do: line
 
         undeclared = MapSet.difference(emitted, MapSet.new(outs)) |> Enum.sort()
-        silent = MapSet.new(outs) |> MapSet.difference(built) |> Enum.sort()
+        unchecked = MapSet.new(outs) |> MapSet.difference(resolved) |> Enum.sort()
+        silent = if unresolved == [], do: unchecked, else: []
         wired = wired_atoms(model, m, asts)
 
         unwired =
@@ -345,6 +357,18 @@ defmodule AlaLint.LiveViewRules do
                 m.line,
                 "#{short(m.name)} declares output `#{p}` but never emits it (R7, R9)"
               )
+          ) ++
+          if(unresolved == [] or unchecked == [],
+            do: [],
+            else: [
+              finding(
+                :ports_computed,
+                m.name,
+                m.file,
+                hd(unresolved),
+                "#{short(m.name)} emits a kind computed at run time (#{Enum.map_join(unresolved, ", ", &"#{Path.basename(m.file)}:#{&1}")}), so whether it emits declared output(s) #{Enum.map_join(unchecked, ", ", &"`#{&1}`")} can't be checked statically (report only)"
+              )
+            ]
           ) ++
           if(wired == :no_composer or unwired == [],
             do: [],
@@ -455,6 +479,168 @@ defmodule AlaLint.LiveViewRules do
 
   defp add_keys(acc, _), do: acc
 
+  # `[{line, {:ok, kinds} | :unknown}]` for each `out.(s, {kind, payload})` whose kind isn't a
+  # literal atom: the literal kinds the variable is enumerated from in the same clause, else :unknown
+  defp computed_kinds(m, ast) do
+    attrs = module_attributes(ast, m.name)
+
+    for fun <- m.functions, {line, var} <- computed_out_calls(fun.body, fun.line) do
+      sources = if var, do: enumerated_from(fun.body, var), else: []
+
+      kinds =
+        Enum.map(sources, fn {shape, source} ->
+          literal_kinds(source, shape, attrs, m.functions, true)
+        end)
+
+      if kinds != [] and Enum.all?(kinds, &match?({:ok, _}, &1)),
+        do: {line, {:ok, kinds |> Enum.map(&elem(&1, 1)) |> Enum.reduce(&MapSet.union/2)}},
+        else: {line, :unknown}
+    end
+  end
+
+  # calls to a function variable named `out*` whose message isn't `{:literal, _}`, as {line, var}
+  # (var nil when the kind isn't a plain variable)
+  defp computed_out_calls(body, fun_line) do
+    {_, acc} =
+      Macro.prewalk(body, [], fn
+        {{:., meta, [{name, _, ctx}]}, _, [_ | _] = args} = node, acc
+        when is_atom(name) and is_atom(ctx) ->
+          line = meta[:line] || fun_line
+
+          cond do
+            not String.starts_with?(to_string(name), "out") ->
+              {node, acc}
+
+            match?({k, _} when is_atom(k), List.last(args)) ->
+              {node, acc}
+
+            match?({{v, _, c}, _} when is_atom(v) and is_atom(c), List.last(args)) ->
+              {node, [{line, elem(elem(List.last(args), 0), 0)} | acc]}
+
+            true ->
+              {node, [{line, nil} | acc]}
+          end
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    Enum.reverse(acc)
+  end
+
+  # what binds `var` by enumeration: `for` generators and `Enum.*(source, fn pattern -> ...)`, as
+  # {:whole | :key, source}, :key when var is the first of a `{var, _}` pattern
+  defp enumerated_from(body, var) do
+    {_, acc} =
+      Macro.prewalk(body, [], fn
+        {:<-, _, [pattern, source]} = node, acc ->
+          {node, bound_shape(pattern, var, source, acc)}
+
+        {:|>, _, [source, {{:., _, [{:__aliases__, _, [:Enum]}, _]}, _, args}]} = node, acc ->
+          {node, fn_patterns(args, var, source, acc)}
+
+        {{:., _, [{:__aliases__, _, [:Enum]}, _]}, _, [source | args]} = node, acc ->
+          {node, fn_patterns(args, var, source, acc)}
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    acc
+  end
+
+  defp fn_patterns(args, var, source, acc) do
+    for {:fn, _, clauses} <- args, {:->, _, [[pattern | _], _]} <- clauses, reduce: acc do
+      a -> bound_shape(pattern, var, source, a)
+    end
+  end
+
+  defp bound_shape({var, _, ctx}, var, source, acc) when is_atom(ctx),
+    do: [{:whole, source} | acc]
+
+  defp bound_shape({{var, _, ctx}, _}, var, source, acc) when is_atom(ctx),
+    do: [{:key, source} | acc]
+
+  defp bound_shape(_, _, _, acc), do: acc
+
+  # the atoms a literal source yields: the elements of an atom list (:whole), or the keys of a
+  # keyword list or map (:key), read through a module attribute, `Map.keys`/`Keyword.keys`, or one
+  # call to a function of the same module
+  defp literal_kinds(list, :whole, _attrs, _funs, _follow?) when is_list(list) do
+    if list != [] and Enum.all?(list, &is_atom/1), do: {:ok, MapSet.new(list)}, else: :unknown
+  end
+
+  defp literal_kinds(list, :key, _attrs, _funs, _follow?) when is_list(list) do
+    keys = add_keys(MapSet.new(), list)
+    if MapSet.size(keys) > 0, do: {:ok, keys}, else: :unknown
+  end
+
+  defp literal_kinds({:%{}, _, kv}, :key, attrs, funs, follow?),
+    do: literal_kinds(kv, :key, attrs, funs, follow?)
+
+  defp literal_kinds({:@, _, [{name, _, ctx}]}, shape, attrs, funs, follow?) when is_atom(ctx) do
+    case Map.fetch(attrs, name) do
+      {:ok, value} -> literal_kinds(value, shape, attrs, funs, follow?)
+      :error -> :unknown
+    end
+  end
+
+  defp literal_kinds(
+         {{:., _, [{:__aliases__, _, [mod]}, :keys]}, _, [x]},
+         :whole,
+         attrs,
+         funs,
+         f?
+       )
+       when mod in [:Map, :Keyword],
+       do: literal_kinds(x, :key, attrs, funs, f?)
+
+  defp literal_kinds({name, _, args}, shape, attrs, funs, true)
+       when is_atom(name) and is_list(args) do
+    returns =
+      for fun <- funs,
+          fun.name == name and fun.arity == length(args),
+          do: literal_kinds(last_expression(fun.body), shape, attrs, funs, false)
+
+    if returns != [] and Enum.all?(returns, &match?({:ok, _}, &1)),
+      do: {:ok, returns |> Enum.map(&elem(&1, 1)) |> Enum.reduce(&MapSet.union/2)},
+      else: :unknown
+  end
+
+  defp literal_kinds(_, _, _, _, _), do: :unknown
+
+  defp last_expression({:__block__, _, [_ | _] = exprs}), do: List.last(exprs)
+  defp last_expression(expr), do: expr
+
+  # `@name value` at the top of the module named `name` in a file's AST, as %{name => value}
+  defp module_attributes(nil, _name), do: %{}
+
+  defp module_attributes(ast, name) do
+    {_, found} =
+      Macro.prewalk(ast, nil, fn
+        {:defmodule, _, [{:__aliases__, _, parts}, [do: body]]} = node, nil ->
+          written = Enum.map_join(parts, ".", &to_string/1)
+
+          if name == written or String.ends_with?(name, "." <> written),
+            do: {node, top_level_attributes(body)},
+            else: {node, nil}
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    found || %{}
+  end
+
+  defp top_level_attributes({:__block__, _, exprs}), do: top_level_attributes(exprs)
+
+  defp top_level_attributes(exprs) do
+    for {:@, _, [{attr, _, [value]}]} <- List.wrap(exprs),
+        is_atom(attr),
+        into: %{},
+        do: {attr, value}
+  end
+
   # atoms a composer uses as port names: `{:feature, :port}` keys, `{:port, x}`
   # patterns, and atom lists (e.g. `@wired_here`)
   defp wired_atoms(model, feature, asts) do
@@ -528,6 +714,7 @@ defmodule AlaLint.LiveViewRules do
         {{:., meta, [{:__aliases__, _, parts}, name]}, _, [_first | rest]} = node, acc ->
           with target when target != nil <- project_target(model, m, parts),
                true <- middle?(model, target),
+               false <- quiet?(model, target),
                true <- Enum.any?(rest, &reads_assign?/1) do
             {node, [{meta[:line] || fun.line, target, name} | acc]}
           else
@@ -842,6 +1029,9 @@ defmodule AlaLint.LiveViewRules do
   defp middle?(model, name),
     do:
       model.layers.index[name] != nil and not composes?(model, name) and not bottom?(model, name)
+
+  # a called part under `r11.calls=wired_only`, whose hand-offs R11 leaves out
+  defp quiet?(model, name), do: MapSet.member?(Map.get(model, :r11_quiet, MapSet.new()), name)
 
   defp lower?(model, name), do: model.layers.index[name] != nil and not composes?(model, name)
 
