@@ -41,10 +41,12 @@ mix ala.lint --layers-module MyApp.AlaLayers   # layer-aware R1/R3 + coverage
 mix ala.lint --min-score 75       # exit 1 if below 75 (CI gate)
 mix ala.lint --strict             # score the obtainable advisory checks too
 mix ala.lint --list-checks        # every check, its tier, and its threshold
+mix ala.lint --explain --strict   # what this run scores, only reports, and leaves to a reader
 mix ala.lint --enforce r7         # promote one advisory check to scored
 mix ala.lint --disable r3         # turn one check off (and say so in the output)
 mix ala.lint --set height.max=4   # retune a threshold (height/module_size/public_surface/app_share/clone/min_score)
 mix ala.lint --set r11.calls=wired_only  # R11 reads hand-offs into wired parts only
+mix ala.lint --preset light_ala   # the light-ALA reading: R1–R7 and the general checks, nothing else
 mix ala.lint --help               # usage; unknown flags warn instead of being ignored
 
 mix ala.encode                    # write an ALA-notation draft of lib/ to ala_encoding/
@@ -55,6 +57,14 @@ mix ala.lint.encoding             # lint a completed encoding tree (R1/R3/R4/R5/
 Every task also has a real `--help`, and `mix help ala.lint` prints the full task
 docs. Unrecognised options warn (`ignoring unknown option(s): …`) rather than
 being silently dropped.
+
+`--explain` prints a guide to the run that its flags and `.ala_lint.exs` describe, and reads no
+code. It has three parts: the checklist rules the run scores, each with its § citation and the
+checks that score it; the rules and checks it only reports; and what still applies that no check
+reads. That last part always has R8, has the judgement half of each other rule the run adopts, and
+under `--preset light_ala` has V59's conventions the linter can't check. A rule whose checks are
+all off is left out, and the last line names it. `AlaLint.Explain.to_text/1` takes the same opts as
+`AlaLint.analyze/2`.
 
 > **On "config" here.** A *config module* (`--config-module`) or a *config layer*
 > (`config: true` in a layer spec) names a **place** where **application literals**
@@ -128,6 +138,19 @@ threshold (`height.max`, `module_size.max`, `public_surface.floor` (older name `
 `public_surface.iqr`, `app_share.max`, `clone.min`, `min_score`). A run that disabled or downgraded any check says so in its
 parameter echo, so a green score never quietly hides which rules it skipped.
 
+A check's level comes from the last source that sets one, in this order: the preset, the `checks:`
+level (from `.ala_lint.exs` or `analyze/2`), `--enforce`, `--disable`. When two of them ask for
+different levels, the report opens with a block that names each source, the level it asked for and
+the one used. `params.conflicts` in the report map holds the same list. Sources that agree, and a
+`checks:` entry with thresholds only, are not a conflict, and a run without one prints what it
+printed before.
+
+```
+settings conflict: 2 checks set differently by more than one source; the later source won
+  clone      file checks: off   --enforce: scored   -> using --enforce (scored)
+  r11        preset light_ala: off   file checks: advisory   -> using file checks (advisory)
+```
+
 R11 takes one setting that is a reading, not a number: `calls:` is `:all` (the default) or
 `:wired_only`, as in `checks: %{r11: [level: :advisory, calls: :wired_only]}`,
 `--set r11.calls=wired_only`, or `AlaLint.analyze(root, r11_calls: :wired_only)`. Any other value
@@ -135,6 +158,47 @@ fails the run (exit 2 from `mix ala.lint`, `ArgumentError` from `analyze/2`). Th
 shows it only when it isn't the default. `:wired_only` is for a composition that wires only the
 parts two or more compositions place and calls the rest (ALA Light, subset 3): a call-and-return
 there is the design, not handled data.
+
+### The light-ALA preset and its two checks
+
+`preset: :light_ala` (in `.ala_lint.exs` or `AlaLint.analyze/2` opts), or `--preset light_ala`,
+scores a codebase as light ALA (`ala_variants_elixir/v59-light-ala`): dependency direction,
+calibration at the top and named rules, without ports, wiring or composition-only pages. It is a
+**whitelist**. It adopts `r1 r1_ref subscribe layer r2 r3 r4 r5 r6 tramp ui_io r7 module_size
+module_avg passthrough height public_surface clone clone_inside unassigned builder_literals
+stale_session_write`, and every other check is off. A check added to the linter later therefore
+stays off under the preset until someone lists it. The list is by check name, not by rule, because
+port-only checks such as `hops`, `vocabulary` and `wiring_closure` sit under rules the preset
+keeps. So R9, R10, R10-aggregate, R11, `r11_share`, `app_share` and the port, wiring and
+composition checks are off. Under the preset, `clone` is scored by `--strict` as usual, and the two
+checks below are scored when they are configured. Precedence: the tier's default < the preset < a
+`checks:` level < `--enforce` < `--disable`; a `checks:` entry that sets only a threshold keeps the
+preset's level. An unknown preset fails (exit 2, `ArgumentError`).
+
+Two checks read light-ALA rules 11 and 12. They are readings, not checklist rules: they don't
+count toward the rules met, and each does nothing until its settings are given. Once configured
+they are advisory, and `--strict`, the preset or `level: :scored` scores them.
+
+```elixir
+checks: %{
+  builder_literals: [
+    structs: ["GoodDeal.Channel", "GoodDeal.Shop"],
+    builders: ["GoodDealWeb.Calibration", "GoodDealWeb.CartSession"],  # optional
+    tests: ["test"],          # also read these for literals; no other check sees them
+    max_positional: 2         # the default
+  ],
+  stale_session_write: [
+    writers: ["GoodDeal.ShoppingCart", "GoodDeal.Orders.complete_checkout"],
+    except: [~r/^(get_|list_)/, "cart_closed?"],   # names, "Mod.fun", or a regex on the name
+    guards: ["GoodDealWeb.CartSession.guard_open_cart"]
+  ]
+}
+```
+
+Without `builders:`, each struct's builders are inferred: the `lib` modules with a function that
+returns the struct, directly or through one call in the same module. The parameter echo names
+them and says whether they were inferred or configured. A struct's own module may always build it.
+A misspelt or missing setting fails the run.
 
 A **layers module** is any module exporting `layers/0` that returns a layer spec
 (see `AlaLint.Layers`). Declare it once with `config :ala_lint, layers_module:
@@ -229,6 +293,8 @@ honest about which is which:
 | **R10-aggregate** shared aggregate | a struct in a **lower** layer read by ≥2 units of a peer-forbidden layer above it — a legitimate domain abstraction (Spray's "ground symbol", §3.6.1), or shared-Entity coupling? A struct whose own functions take it as configuration and never update it (a rate table, a stock rule built once and handed down) is configuration, not shared data, and isn't reported. Checked and scored under `--strict` and `--super-strict` since 2026-10-03: read strictly, it is Spray's shared entity: an identity "should not be used as the carrier of information between two use cases" (§6.17.2). Two fixes: send a consumer only the data it needs (an id and the lines, not the cart), and keep each use case's data out of a struct another use case shares. A deliberately shared value type can be downgraded with `checks: %{r10_aggregate: :advisory}` | strict, scored |
 | **R11** composition-only top layer | A top-layer function **branches** (reported as *guard* or *logic*; `with`, a `case` that only routes ok/error outcomes, and LiveView's `if connected?(socket)` are exempt, as the connection mechanism, routing, and the one framework departure the checklist names). A closed dispatch is routing too (a checklist reading, 2026-10-21): a literal map from states to components or handlers (`@views[step]`, `Map.fetch!(@handlers, event)`) is not a branch, and neither is a `case` whose patterns are literals and whose arms only pick: a module, a capture, a `~H` block, `render`/`live_component`/`component`, `push_navigate`/`push_patch`/`redirect` (also inside a `{:noreply, …}` tuple), or a function component given `assigns`. An arm that does other work keeps the `case` a branch, and so does a `nil ->`, `true ->` or `false ->` arm, an `if` spelled as a `case` (*guard* for `nil`). A function that **chooses what runs by a name built at run time** is the same branch, hidden: `apply/3` (or `Kernel.apply/3`, `Function.capture/3`) with a non-literal module or function, or a call on a module built by `String.to_atom`, `String.to_existing_atom`, `Module.concat` or an interpolated atom (directly or through a variable). An atom built from input and used as data (`%{method: String.to_existing_atom(m)}`) and a call of a configured function (`fun.(x)`, `apply(fun, args)`) are wiring, not this. Also a finding: the function does **arithmetic** (in its body or in a shorthand function it builds, `&(&1 * rate)`; a named capture `&Mod.fun/2` is not division); it **iterates** (a `for` comprehension, Spray's "for loop", §1.6.3); it **handles data** (binds a lower-layer call's result and passes it to another lower-layer call, or passes one straight into another's call as an argument, Spray §1.6.3; a nested `new` building an instance's configuration isn't counted, and neither are pipes, because a pipe of stages is how Elixir writes his §1.6.4 chain); or it is part of a **working chain** (an app function calling another app function that computes or decides). Under `r11.calls=wired_only` the hand-offs (handled data, an assign passed in, a template call) into a **called part** are left out: a project module below the application that declares no `ports/0`. Branches on its result, arithmetic, iteration and working chains are still reported, and `:r11_share` counts only what is. Real findings; reported by default, scored only under `--super-strict` | advisory / super-strict |
 | **clone** duplicated logic | *advisory, R7.* The same logic in two functions of different modules (in one module it is **clone_inside**, reported and never scored by a tier, as in `ala_lint_ruby`: the checklist leaves an abstraction's interior to its author). Exact: the same shape with variables renamed and literal values changed (a whole function, a run of its clauses, a clause, an expression, or a run of statements or pipeline stages), at least `--set clone.min=N` normalized AST nodes (default 26). Near miss, across modules only: a clause copied and then edited, where identical subtrees of 4+ nodes (atoms kept) make up at least 45% of both clauses. Each copy is reported once, at its largest match. A clause or statement that is one call on plain arguments (`wire/3`, a routing `handle_event`, `{:noreply, Steps.run(...)}`) or plain data (`ports/0`) adds nothing to the size, since wiring looks alike by design. Checklist reading, not Spray's wording: a concept written twice instead of one abstraction both places compose and configure. It leans on "abstraction and reuse are two sides of the same coin" (Summary, §2.1.1) and an element knowing one thing that "no other elements should know about" (§7.25). Added 2026-10-19, after agents in a change-cost experiment met every other check by copying logic; the default size and the 45% share were calibrated there and on V50, V51 and V51B | heuristic, advisory / strict |
+| **builder_literals** (light-ALA rule 11) | A guarded struct built (`%Mod{...}`, `struct/2`, `struct!/2`) outside its builders, in `lib` or in a `tests:` path. Patterns (function heads, `=`/`->`/`<-` left sides, `match?`) and updates (`%Mod{s \| f: v}`) are not builds. Also a public builder that returns a guarded struct and takes its fields positionally: more than `max_positional` non-keyword parameters, or no keyword-list parameter and a parameter named like a field, or a parameter named like an optional (non-enforced) field. A keyword parameter is one with a list default, one used with `++`, as `struct!/2`'s second argument or in a `Keyword` call, or one named `overrides`, `opts`, `options`, `attrs`, `fields`, `kw` or `keywords`. Hybrid 1's S04 broke 119 tests through a builder whose cart id was positional | heuristic; off unless configured |
+| **stale_session_write** (light-ALA rule 12) | A LiveView (a `:live_view` use, or `mount/3` and `handle_event/3` without a component use) whose `handle_event` clauses call a configured writer, directly or through the module's private functions, while no `mount` clause (or private function it calls) calls a configured guard. One finding per page, at `mount`, listing each event and the writers it reaches. Controllers and LiveComponents are not read; calls into other modules are not followed (name such a module's function as a writer), nor are `handle_info`/`handle_async`, an `on_mount` hook or a guard's `only:` list. Hybrid 1's S07 reorder wrote to a cart its page captured at mount after the session had moved on | heuristic; off unless configured |
 | **module size** | *advisory.* A module over `--max-module-loc` (default 500) | metric, **advisory** |
 | **module_avg** | files averaging under 100 lines (Spray: "more abstractions than we need"; `--set module_size.min_avg=N`). Reported at every tier, scored by none: Spray's bound is per abstraction, and an Elixir single-function domain module is deliberately small | metric, reported only |
 | **app_share** | the application layer's share of all functions (`--set app_share.max=F`, default 0.20). Reported at every tier, scored by none: a ratio that penalises an app for having many pages | metric, reported only |
@@ -246,7 +312,7 @@ honest about which is which:
 | **public surface** | a module whose public **ports** are an outlier among its own layer's modules (all modules when there is no layer map): more than max(floor, Q3 + k × IQR) of that layer's counts, quartiles by linear interpolation (numpy's default, Excel's QUARTILE.INC). Floor `--set public_surface.floor=N` (default 10, so a tiny app's small modules never trip it), k `--set public_surface.iqr=K` (default 1.5, Tukey's fence). A public function is one port, except that clauses matching distinct map or struct shapes in the same argument are one port per shape (`set_product(l, %{stock: _})` and `set_product(l, %{amount: _})` are two); shapes are compared among clauses with the same literal arguments, so under an event name (`handle_event("ship", %{"method" => m}, s)`) the shape is that event's payload and a multi-clause `handle_event` still counts once. A **calibration module** is left out of the count and the distribution: every public clause returns a literal (a number, string, atom, list, tuple, map or struct of literals, a module attribute) or picks one from a literal table by a key argument (`promo_codes(:portal)` heads, `Map.fetch!(@table, key)`, `@table[key]`, a `case key` with literal arms). Spray gives no count ("abstractness decreases with more ports", §7.2.3); the check prompts the R6/R7 judgement (one concept? mess kept private?). Reported at every tier and **scored by none** since 2026-10-21, after runs treated the old fixed limit of 12 as a gate and contorted code to stay under it; `--enforce public_surface` scores it | metric, reported only |
 | **layer cohesion** | *advisory metric.* Per layer, the share of its functions under one directory (Spray: directories separate layers). 100% = cohesive | metric, **advisory** |
 
-**Rules met.** The score is a density (weighted findings per 100 functions), so a few findings in a large codebase round away even when they matter. The report also counts the checklist rules met: a rule is met when none of its checks has a scored finding at the current tier, and a second count includes advisory findings. R8 is judgement and is never checked; R11 needs a layer map. Each check counts toward one rule (`ui_io` and `tramp` toward R6, `subcomponent` toward R11, `ports` toward R9, the size, depth and clone checks toward R7). The report map carries it as `rules`: `%{met: 9, checked: 10, total: 11, met_strictly: 7, by_rule: %{r11: %{state: :not_met, scored: 1, advisory: 0}, ...}}`.
+**Rules met.** The score is a density (weighted findings per 100 functions), so a few findings in a large codebase round away even when they matter. The report also counts the checklist rules met: a rule is met when none of its checks has a scored finding at the current tier, and a second count includes advisory findings. A rule whose checks are all off is `:not_adopted`, not met: it is left out of both counts, and the report lists it (`not adopted (their checks are off): R9, R10, R11`). R8 is judgement and is never checked; R11 needs a layer map. Each check counts toward one rule (`ui_io` and `tramp` toward R6, `subcomponent` toward R11, `ports` toward R9, the size, depth and clone checks toward R7). The report map carries it as `rules`: `%{met: 9, checked: 10, total: 11, met_strictly: 7, not_adopted: 0, by_rule: %{r11: %{state: :not_met, scored: 1, advisory: 0}, ...}}`.
 
 ### Strictness modes
 

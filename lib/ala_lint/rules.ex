@@ -48,6 +48,9 @@ defmodule AlaLint.Rules do
   }
   def weights, do: @weights
 
+  @doc "Every check the linter runs, the light-ALA readings included."
+  def checks, do: Map.keys(@weights) ++ AlaLint.LightAla.checks()
+
   # Advisory rules that a strict mode promotes to scored. `--strict` promotes the
   # obtainable ones; R11 is aspirational and promoted only by `--super-strict` (see
   # AlaLint.analyze). Not listed, so never promoted by a tier (only by `--enforce`):
@@ -129,7 +132,7 @@ defmodule AlaLint.Rules do
   @doc "Run every rule; returns a flat list of findings."
   def run(model) do
     findings = base_run(model) ++ AlaLint.LiveViewRules.run(model) ++ unassigned(model)
-    findings ++ AlaLint.LiveViewRules.logic_share(model, findings)
+    findings ++ AlaLint.LiveViewRules.logic_share(model, findings) ++ AlaLint.LightAla.run(model)
   end
 
   defp base_run(model) do

@@ -77,6 +77,41 @@ defmodule AlaLint.Config do
 
   def normalize_checks(_), do: %{disabled: [], soft: [], scored: [], thresholds: %{}}
 
+  @doc "The level each entry of a `checks` map sets, `%{check => level}`; an entry with thresholds only sets none."
+  def levels(checks) when is_map(checks) do
+    for {check, spec} <- checks,
+        {level, _max} = split_spec(spec),
+        level != nil,
+        into: %{},
+        do: {check, level}
+  end
+
+  def levels(_), do: %{}
+
+  @doc """
+  The checks that two or more sources set to different levels. `sources` is
+  `[{label, %{check => level}}]` in precedence order, so the last source that set a check won.
+  """
+  def conflicts(sources) do
+    sources
+    |> Enum.flat_map(fn {_label, levels} -> Map.keys(levels) end)
+    |> Enum.uniq()
+    |> Enum.sort()
+    |> Enum.flat_map(fn check ->
+      asked =
+        for {label, levels} <- sources,
+            Map.has_key?(levels, check),
+            do: %{source: label, level: levels[check]}
+
+      if asked |> Enum.uniq_by(& &1.level) |> length() > 1 do
+        last = List.last(asked)
+        [%{check: check, sources: asked, winner: last.source, level: last.level}]
+      else
+        []
+      end
+    end)
+  end
+
   @doc "Parse a `--set key=value` string into `{param_atom, typed_value}` or `:error`."
   def parse_set("r11.calls=" <> val), do: {:r11_calls, val}
 
@@ -113,6 +148,165 @@ defmodule AlaLint.Config do
   def default_choice(param), do: @choices |> Map.fetch!(param) |> hd()
 
   def set_name(:r11_calls), do: "r11.calls"
+
+  # A whitelist, so a check added to the linter later stays off under the preset until someone
+  # decides it belongs to the reading, rather than turning on silently. By check name, not rule:
+  # port-only checks (hops, vocabulary, wiring_closure) are filed under rules the preset keeps.
+  @presets %{
+    light_ala: ~w(r1 r1_ref subscribe layer r2 r3 r4 r5 r6 tramp ui_io r7 module_size module_avg
+         passthrough height public_surface clone clone_inside unassigned
+         builder_literals stale_session_write)a
+  }
+
+  @doc "The checks a preset adopts."
+  def preset_checks(name), do: Map.fetch!(@presets, name)
+
+  @doc "The checks of `checks` a preset turns off: every one it doesn't adopt."
+  def preset_off(name, checks), do: checks -- preset_checks(name)
+
+  @doc """
+  A preset named by an atom or a string: `{:ok, %{name:, adopts:, off:}}`, or `{:error, message}`
+  naming the presets there are.
+  """
+  def preset(name) do
+    case Enum.find(Map.keys(@presets), &(to_string(&1) == to_string(name))) do
+      nil ->
+        {:error,
+         "unknown preset #{inspect(name)} (one of: #{@presets |> Map.keys() |> Enum.join(", ")})"}
+
+      found ->
+        {:ok,
+         %{
+           name: found,
+           adopts: preset_checks(found),
+           off: preset_off(found, AlaLint.Rules.checks())
+         }}
+    end
+  end
+
+  @light_keys %{
+    builder_literals: [:level, :structs, :builders, :tests, :max_positional],
+    stale_session_write: [:level, :writers, :except, :guards]
+  }
+
+  @doc """
+  The settings of the light-ALA checks in a `checks` map, `{:ok, %{check => settings | nil}}`
+  (nil: not configured, so the check does nothing), or `{:error, message}`.
+  """
+  def light_settings(checks) when is_map(checks) do
+    Enum.reduce_while(Map.keys(@light_keys), {:ok, %{}}, fn check, {:ok, acc} ->
+      case light_setting(check, Map.get(checks, check)) do
+        {:ok, settings} -> {:cont, {:ok, Map.put(acc, check, settings)}}
+        {:error, message} -> {:halt, {:error, "#{check}: #{message}"}}
+      end
+    end)
+  end
+
+  def light_settings(_), do: light_settings(%{})
+
+  defp light_setting(_check, nil), do: {:ok, nil}
+  defp light_setting(_check, :off), do: {:ok, nil}
+  defp light_setting(check, level) when is_atom(level), do: light_setting(check, level: level)
+
+  defp light_setting(check, spec) when is_list(spec) do
+    unknown = Keyword.keys(spec) -- @light_keys[check]
+
+    cond do
+      not Keyword.keyword?(spec) ->
+        {:error, "expected a keyword list, got #{inspect(spec)}"}
+
+      unknown != [] ->
+        {:error,
+         "unknown setting(s) #{Enum.map_join(unknown, ", ", &inspect/1)} (one of: #{Enum.join(@light_keys[check], ", ")})"}
+
+      spec[:level] == :off ->
+        {:ok, nil}
+
+      true ->
+        light_values(check, spec)
+    end
+  end
+
+  defp light_setting(_check, spec), do: {:error, "expected a keyword list, got #{inspect(spec)}"}
+
+  defp light_values(:builder_literals, spec) do
+    with {:ok, structs} <- names(spec, :structs, required: true),
+         {:ok, builders} <- names(spec, :builders, required: false),
+         {:ok, tests} <- names(spec, :tests, required: false),
+         {:ok, max} <- non_negative(spec, :max_positional, 2) do
+      {:ok, %{structs: structs, builders: builders, tests: tests || [], max_positional: max}}
+    end
+  end
+
+  defp light_values(:stale_session_write, spec) do
+    with {:ok, writers} <- names(spec, :writers, required: true),
+         {:ok, guards} <- names(spec, :guards, required: false),
+         {:ok, except} <- exceptions(Keyword.get(spec, :except, [])) do
+      {:ok,
+       %{
+         writers: Enum.map(writers, &target/1),
+         guards: Enum.map(guards || [], &target/1),
+         except: except
+       }}
+    end
+  end
+
+  defp names(spec, key, required: required) do
+    case Keyword.fetch(spec, key) do
+      :error when required ->
+        {:error, "needs #{key}: [\"Module\", ...] (it does nothing without it)"}
+
+      :error ->
+        {:ok, nil}
+
+      {:ok, [_ | _] = list} ->
+        if Enum.all?(list, &is_binary/1),
+          do: {:ok, list},
+          else: {:error, "#{key}: takes strings, got #{inspect(list)}"}
+
+      {:ok, other} ->
+        {:error, "#{key}: takes a non-empty list of strings, got #{inspect(other)}"}
+    end
+  end
+
+  defp non_negative(spec, key, default) do
+    case Keyword.get(spec, key, default) do
+      n when is_integer(n) and n >= 0 -> {:ok, n}
+      other -> {:error, "#{key}: takes a non-negative integer, got #{inspect(other)}"}
+    end
+  end
+
+  defp exceptions(list) when is_list(list) do
+    if Enum.all?(list, &(is_binary(&1) or is_struct(&1, Regex))),
+      do: {:ok, Enum.map(list, &exception/1)},
+      else:
+        {:error,
+         "except: takes function names, \"Module.fun\" strings or a regex, got #{inspect(list)}"}
+  end
+
+  defp exceptions(other), do: {:error, "except: takes a list, got #{inspect(other)}"}
+
+  defp exception(%Regex{} = re), do: re
+
+  defp exception(name) do
+    case target(name) do
+      {nil, fun} -> fun
+      target -> target
+    end
+  end
+
+  # "Mod.fun" -> {"Mod", :fun}; "Mod" -> {"Mod", nil}; "fun" -> {nil, :fun}. A function name
+  # starts lower-case, a module segment upper-case.
+  defp target(name) do
+    parts = String.split(name, ".")
+    last = List.last(parts)
+
+    cond do
+      last =~ ~r/^[a-z_]/ and length(parts) == 1 -> {nil, String.to_atom(last)}
+      last =~ ~r/^[a-z_]/ -> {Enum.join(Enum.drop(parts, -1), "."), String.to_atom(last)}
+      true -> {name, nil}
+    end
+  end
 
   # ── helpers ──────────────────────────────────────────────────────────
   defp split_spec(level) when level in [:off, :advisory, :scored], do: {level, nil}

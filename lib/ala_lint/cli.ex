@@ -75,6 +75,22 @@ defmodule AlaLint.CLI do
     hops           a page relaying between LiveComponents (one message hop per effect)
     vocabulary     kinds a paradigm dispatches on (the wiring vocabulary a reader learns)
 
+  LIGHT-ALA READINGS  (not checklist rules; off unless configured in `checks:`; then advisory,
+                      scored under --strict or the light_ala preset)
+    builder_literals     a config or context struct built outside its builders (in lib, and in
+                         test files with tests:), or a builder taking fields positionally (rule 11)
+                         checks: %{builder_literals: [structs: [...], builders: [...], tests: ["test"],
+                                                      max_positional: 2]}
+    stale_session_write  a LiveView whose events write session-scoped data while its mount
+                         attaches no guard (rule 12)
+                         checks: %{stale_session_write: [writers: [...], except: [...], guards: [...]]}
+
+  PRESETS  (--preset NAME, or `preset:` in the file; a `checks:` level, --enforce and --disable win)
+    --preset light_ala   adopts r1 r1_ref subscribe layer r2–r7 tramp ui_io module_size
+                         module_avg passthrough height public_surface clone clone_inside
+                         unassigned builder_literals stale_session_write; every other check is
+                         off (a whitelist, so a check added later stays off until it is listed)
+
   NOT MACHINE-SCORED  (a human reads for these)
     r8    reads as the requirements
     r9    the rest of R9 (outputs announce, no shared DTOs) is judgement

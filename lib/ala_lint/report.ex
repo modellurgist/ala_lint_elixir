@@ -116,12 +116,14 @@ defmodule AlaLint.Report do
   def checklist_rule(check), do: Map.get(@checklist_rule, check)
 
   @doc """
-  Per checklist rule: `:met` (no scored finding at this tier), `:not_met`, or `:unchecked` (R8, or a
-  rule whose checks need a layer map), with the scored and advisory finding counts. `met_strictly`
-  counts the rules with no finding of any severity.
+  Per checklist rule: `:met` (no scored finding at this tier), `:not_met`, `:not_adopted` (every
+  check of the rule is off, so nothing was checked), or `:unchecked` (R8, or a rule whose checks
+  need a layer map), with the scored and advisory finding counts. `met_strictly` counts the rules
+  with no finding of any severity; neither count includes a rule not adopted.
   """
   def rule_status(model, findings, scored) do
     layered = match?(%{layers: %{index: _}}, model)
+    disabled = get_in(model, [:params, :disabled]) || []
     count = fn list -> Enum.frequencies_by(list, &checklist_rule(&1.rule)) end
     scored_n = count.(scored)
     all_n = count.(findings)
@@ -133,7 +135,9 @@ defmodule AlaLint.Report do
 
         state =
           cond do
-            r == :r8 or (r in @needs_layers and not layered) -> :unchecked
+            r == :r8 -> :unchecked
+            all_off?(r, disabled) -> :not_adopted
+            r in @needs_layers and not layered -> :unchecked
             s > 0 -> :not_met
             true -> :met
           end
@@ -141,7 +145,7 @@ defmodule AlaLint.Report do
         {r, %{state: state, scored: s, advisory: a}}
       end
 
-    checked = Enum.count(status, fn {_, v} -> v.state != :unchecked end)
+    checked = Enum.count(status, fn {_, v} -> v.state not in [:unchecked, :not_adopted] end)
     met = Enum.count(status, fn {_, v} -> v.state == :met end)
     strict = Enum.count(status, fn {_, v} -> v.state == :met and v.advisory == 0 end)
 
@@ -150,8 +154,16 @@ defmodule AlaLint.Report do
       total: length(@checklist_rules),
       checked: checked,
       met: met,
-      met_strictly: strict
+      met_strictly: strict,
+      not_adopted: Enum.count(status, fn {_, v} -> v.state == :not_adopted end)
     }
+  end
+
+  defp all_off?(rule, disabled) do
+    case for({check, ^rule} <- @checklist_rule, do: check) do
+      [] -> false
+      checks -> Enum.all?(checks, &(&1 in disabled))
+    end
   end
 
   defp distinct_functions(model) do
@@ -267,6 +279,7 @@ defmodule AlaLint.Report do
 
     header =
       unassigned_banner(report) <>
+        conflict_banner(report.params[:conflicts]) <>
         """
         ── ALA Checklist (R1–R11) ─────────────────────────────────────────────
         modules: #{report.modules}   functions: #{report.distinct_functions} (#{report.functions} clauses)   LOC: #{report.loc}
@@ -354,7 +367,7 @@ defmodule AlaLint.Report do
       root:           #{params[:root]}
       max_height:     #{params[:max_height]}   max_module_loc: #{params[:max_module_loc]}   public_surface: floor #{params[:max_public_funs]}, #{params[:public_surface_iqr]}×IQR   app_share: #{params[:max_app_share]}   min_avg_module_loc: #{params[:min_avg_module_loc]}   clone.min: #{params[:min_clone_size]}
       enforce:        #{enforce}#{integrity}
-      layers:         #{params[:layers]}#{if params[:r11_calls], do: "\n  r11.calls:      #{params[:r11_calls]}"}
+      layers:         #{params[:layers]}#{if params[:r11_calls], do: "\n  r11.calls:      #{params[:r11_calls]}"}#{if params[:preset], do: "\n  preset:         #{params[:preset]}"}#{builders_line(params[:builders])}
       config_modules: #{fmt_list(params[:config_modules])}
       exclude:        #{fmt_list(params[:exclude])}
       weights:        #{weights}
@@ -362,9 +375,21 @@ defmodule AlaLint.Report do
     """
   end
 
+  defp builders_line(nil), do: ""
+
+  defp builders_line(builders) do
+    shown =
+      Enum.map_join(builders, "; ", fn {struct, {mods, how}} ->
+        "#{struct} built by #{if mods == [], do: "(none found)", else: Enum.join(mods, ", ")} (#{how})"
+      end)
+
+    "\n  builder_literals: #{shown}"
+  end
+
   defp line_if(_label, nil), do: ""
   defp line_if(_label, []), do: ""
-  defp line_if(label, list), do: "\n      #{label} #{Enum.join(list, ",")}"
+  # sorted, so the line never depends on the order a map of checks happens to iterate in
+  defp line_if(label, list), do: "\n      #{label} #{list |> Enum.sort() |> Enum.join(",")}"
 
   defp fmt_list(nil), do: "(none)"
   defp fmt_list([]), do: "(none)"
@@ -405,6 +430,21 @@ defmodule AlaLint.Report do
 
         """
     end
+  end
+
+  @doc "Which source won where two settings disagreed on a check's level. Empty without a conflict."
+  def conflict_banner(nil), do: ""
+
+  def conflict_banner(conflicts) do
+    width = conflicts |> Enum.map(&String.length(to_string(&1.check))) |> Enum.max() |> max(10)
+    n = length(conflicts)
+
+    "settings conflict: #{n} check#{if n == 1, do: "", else: "s"} set differently by more than one source; the later source won\n" <>
+      Enum.map_join(conflicts, "", fn c ->
+        asked = Enum.map_join(c.sources, "   ", &"#{&1.source}: #{&1.level}")
+
+        "  #{String.pad_trailing(to_string(c.check), width)} #{asked}   -> using #{c.winner} (#{c.level})\n"
+      end) <> "\n"
   end
 
   defp coverage_line(nil),
@@ -448,15 +488,30 @@ defmodule AlaLint.Report do
           :met -> "#{name} met"
           :not_met -> "#{name} NOT met (#{v.scored})"
           :unchecked -> "#{name} unchecked"
+          :not_adopted -> "#{name} not adopted"
         end
       end)
 
     """
     Checklist rules met: #{rules.met} of #{rules.checked} checked (#{rules.total} in the checklist; R8 is judgement)
-      with no finding at all, advisory included: #{rules.met_strictly} of #{rules.checked}
+    #{not_adopted_line(rules)}  with no finding at all, advisory included: #{rules.met_strictly} of #{rules.checked}
       — a count, not a density: one finding in a large codebase still leaves its rule unmet.
       #{marks}\
     """
+  end
+
+  defp not_adopted_line(%{by_rule: by_rule}) do
+    case for(
+           r <- @checklist_rules,
+           by_rule[r].state == :not_adopted,
+           do: String.upcase(to_string(r))
+         ) do
+      [] ->
+        ""
+
+      names ->
+        "  not adopted (their checks are off): #{Enum.join(names, ", ")}; left out of both counts\n"
+    end
   end
 
   defp accepted_line(%{acceptances: []}), do: ""

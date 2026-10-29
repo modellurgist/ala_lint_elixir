@@ -10,6 +10,7 @@ defmodule Mix.Tasks.Ala.Lint do
       mix ala.lint --strict               # score the obtainable advisory checks too
       mix ala.lint --min-score 85         # exit non-zero below 85 (CI gate)
       mix ala.lint --list-checks          # every check, its tier, and its threshold
+      mix ala.lint --explain --strict     # what this run scores, reports, and leaves to a reader
 
   Fine-grained, per-check configuration lives in a `.ala_lint.exs` file at the
   project root, not on the command line (see `AlaLint.Config`). One-off tweaks
@@ -28,10 +29,14 @@ defmodule Mix.Tasks.Ala.Lint do
     --min-score N        exit non-zero if the score is below N (the CI gate)
     --strict             score the obtainable advisory checks (R7, module-size, height, pass-through, R1-ref)
     --super-strict       --strict, plus the aspirational check (R11)
+    --preset light_ala   adopt only the light-ALA reading's checks (R1–R7 and the general ones);
+                         every other check is off and its rule reported as not adopted
     --layers-module MOD  a module exporting layers/0 → layer-aware R1/R3/R10/R11 + coverage
     --require-layers     exit non-zero if any module matches no layer (the layer-aware checks skip it)
     --limit N            show up to N findings (default 40)
     --list-checks        print every check with its tier and threshold, then exit
+    --explain            print what this run's settings score, only report, and leave to a
+                         reader (rule by rule, with § citations), then exit without reading code
     --list-accepted      print every @inherent_ declaration and every `ala:accept` comment, what
                          it covers, and the stale ones, then exit
     --help, -h           show this help
@@ -54,9 +59,10 @@ defmodule Mix.Tasks.Ala.Lint do
     --config-module MOD  treat MOD as a config/manifest locus for R3 (repeatable)
 
   Durable settings belong in a `.ala_lint.exs` map at the project root
-  (layers_module, min_score, config_modules, exclude, and a `checks:` map that
-  sets each check to off / advisory / scored and retunes its threshold). CLI
-  flags override the file for a single run.
+  (layers_module, min_score, config_modules, exclude, preset, and a `checks:` map
+  that sets each check to off / advisory / scored and retunes its threshold, and
+  configures builder_literals and stale_session_write). CLI flags override the
+  file for a single run.
   """
 
   @impl true
@@ -82,8 +88,10 @@ defmodule Mix.Tasks.Ala.Lint do
           set: :keep,
           strict: :boolean,
           super_strict: :boolean,
+          preset: :string,
           list_checks: :boolean,
-          list_accepted: :boolean
+          list_accepted: :boolean,
+          explain: :boolean
         ],
         aliases: [l: :limit]
       )
@@ -112,6 +120,8 @@ defmodule Mix.Tasks.Ala.Lint do
 
     min_score = sets[:min_score] || opts[:min_score] || Map.get(file, :min_score)
     r11_calls = r11_calls!(sets, file)
+    preset = preset!(opts[:preset] || Map.get(file, :preset))
+    ok!(AlaLint.Config.light_settings(Map.get(file, :checks, %{})))
 
     threshold_opts =
       sets
@@ -136,8 +146,17 @@ defmodule Mix.Tasks.Ala.Lint do
         exclude: Map.get(file, :exclude, []),
         strict: opts[:strict] || false,
         super_strict: opts[:super_strict] || false
-      ] ++ threshold_opts ++ if(r11_calls, do: [r11_calls: r11_calls], else: [])
+      ] ++
+        threshold_opts ++
+        if(r11_calls, do: [r11_calls: r11_calls], else: []) ++
+        if(preset, do: [preset: preset], else: [])
 
+    if opts[:explain],
+      do: Mix.shell().info(AlaLint.Explain.to_text(analyze_opts)),
+      else: lint(roots, analyze_opts, opts, file, min_score)
+  end
+
+  defp lint(roots, analyze_opts, opts, file, min_score) do
     report = AlaLint.analyze(roots, analyze_opts)
 
     if opts[:list_accepted] do
@@ -187,6 +206,13 @@ defmodule Mix.Tasks.Ala.Lint do
         end
     end
   end
+
+  # A preset or a light-ALA setting is a word or a list, not a number, so a typo fails the run.
+  defp preset!(nil), do: nil
+  defp preset!(name), do: ok!(AlaLint.Config.preset(name)).name
+
+  defp ok!({:ok, value}), do: value
+  defp ok!({:error, message}), do: Mix.raise(message, exit_status: 2)
 
   # Parse `--set KEY=VALUE` strings into a map of {param => value}, collecting
   # any that don't name a known threshold.

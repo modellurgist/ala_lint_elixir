@@ -829,24 +829,25 @@ defmodule AlaLint.Analyzer do
   end
 
   # short→full pairs from an `alias` statement's arguments.
-  defp alias_pairs([{:__aliases__, _, parts}]) when is_list(parts),
+  @doc "The `{short, full}` names an `alias` statement's arguments bind."
+  def alias_pairs([{:__aliases__, _, parts}]) when is_list(parts),
     do: [{to_string(List.last(parts)), mod_name(parts)}]
 
-  defp alias_pairs([{:__aliases__, _, parts}, opts]) when is_list(parts) and is_list(opts) do
+  def alias_pairs([{:__aliases__, _, parts}, opts]) when is_list(parts) and is_list(opts) do
     case opts[:as] do
       {:__aliases__, _, as_parts} -> [{to_string(List.last(as_parts)), mod_name(parts)}]
       _ -> [{to_string(List.last(parts)), mod_name(parts)}]
     end
   end
 
-  defp alias_pairs([{{:., _, [{:__aliases__, _, base}, :{}]}, _, subs}])
-       when is_list(base) and is_list(subs) do
+  def alias_pairs([{{:., _, [{:__aliases__, _, base}, :{}]}, _, subs}])
+      when is_list(base) and is_list(subs) do
     for {:__aliases__, _, parts} <- subs,
         is_list(parts),
         do: {to_string(List.last(parts)), mod_name(base ++ parts)}
   end
 
-  defp alias_pairs(_), do: []
+  def alias_pairs(_), do: []
 
   defp mod_name(parts), do: Enum.map_join(parts, ".", &to_string/1)
 end
